@@ -2,6 +2,7 @@ const std = @import("std");
 const db_module = @import("../infra/db/sqlite.zig");
 const Database = db_module.Database;
 const pos = @import("../app/pos.zig");
+const device = @import("../app/device.zig");
 const money = @import("../domain/money.zig");
 const Envelope = struct { id: []const u8, command: []const u8, payload: std.json.Value };
 const max_message_bytes = 64 * 1024;
@@ -102,7 +103,81 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
         try fields(p, 1);
         return success(allocator, request.id, .{ .sale = try pos.saleDetail(db, a, try positiveInteger(p, "id")) });
     }
+    if (std.mem.eql(u8, request.command, "device.get")) {
+        try fields(p, 0);
+        return success(allocator, request.id, .{ .config = try device.loadConfig(db, a) });
+    }
+    if (std.mem.eql(u8, request.command, "device.save")) {
+        const config = try configPayload(p);
+        const response = try success(allocator, request.id, .{ .saved = true });
+        errdefer allocator.free(response);
+        try device.saveConfig(db, config);
+        return response;
+    }
+    if (std.mem.eql(u8, request.command, "device.printers")) {
+        try fields(p, 0);
+        return success(allocator, request.id, .{ .printers = try device.listPrinters(a) });
+    }
+    if (std.mem.eql(u8, request.command, "receipt.preview")) {
+        try fields(p, 1);
+        const preview = try device.previewSale(db, a, try positiveInteger(p, "id"));
+        const encoder = std.base64.standard.Encoder;
+        const bytes = try a.alloc(u8, encoder.calcSize(preview.bytes.len));
+        return success(allocator, request.id, .{ .text = preview.text, .escpos_base64 = encoder.encode(bytes, preview.bytes), .width = preview.width });
+    }
+    if (std.mem.eql(u8, request.command, "receipt.print") or std.mem.eql(u8, request.command, "receipt.reprint")) {
+        try fields(p, 1);
+        const sale_id = try positiveInteger(p, "id");
+        const is_copy = std.mem.eql(u8, request.command, "receipt.reprint");
+        // Allocate acknowledgement before irreversible printer IO.
+        const response = try success(allocator, request.id, .{ .submitted = true, .is_copy = is_copy });
+        errdefer allocator.free(response);
+        try device.printSale(db, a, sale_id, is_copy);
+        return response;
+    }
+    if (std.mem.eql(u8, request.command, "device.test_print")) {
+        try fields(p, 0);
+        const response = try success(allocator, request.id, .{ .submitted = true });
+        errdefer allocator.free(response);
+        try device.testPrint(db, a);
+        return response;
+    }
+    if (std.mem.eql(u8, request.command, "device.open_drawer")) {
+        try fields(p, 0);
+        const response = try success(allocator, request.id, .{ .submitted = true });
+        errdefer allocator.free(response);
+        try device.openDrawer(db, a);
+        return response;
+    }
     return failure(allocator, request.id, "unknown_command");
+}
+
+fn configPayload(p: std.json.Value) !device.Config {
+    try fields(p, 16);
+    return .{
+        .printer_kind = try string(p, "printer_kind"),
+        .printer_name = try string(p, "printer_name"),
+        .file_path = try string(p, "file_path"),
+        .tcp_host = try string(p, "tcp_host"),
+        .tcp_port = try integer(p, "tcp_port"),
+        .paper_width = try integer(p, "paper_width"),
+        .header = try string(p, "header"),
+        .footer = try string(p, "footer"),
+        .qr_payload = try string(p, "qr_payload"),
+        .copies = try integer(p, "copies"),
+        .feed_lines = try integer(p, "feed_lines"),
+        .show_sku = try boolean(p, "show_sku"),
+        .show_barcode = try boolean(p, "show_barcode"),
+        .show_qr = try boolean(p, "show_qr"),
+        .cash_drawer = try boolean(p, "cash_drawer"),
+        .cut_paper = try boolean(p, "cut_paper"),
+    };
+}
+
+fn boolean(value: std.json.Value, key: []const u8) !bool {
+    const result = try field(value, key);
+    if (result != .bool) return error.InvalidPayload;
+    return result.bool;
 }
 
 fn fields(value: std.json.Value, count: usize) !void {
@@ -180,6 +255,13 @@ fn errorCode(err: anyerror) []const u8 {
         error.IdempotencyConflict => "idempotency_conflict",
         error.CheckoutUnknown => "checkout_unknown",
         error.SaleNotFound => "sale_not_found",
+        error.InvalidConfig => "invalid_device_config",
+        error.InvalidWidth, error.TooWide, error.InvalidBitmap, error.InvalidCode, error.InvalidReceiptText => "invalid_receipt",
+        error.PrinterUnreachable => "printer_unreachable",
+        error.PrinterNotFound => "printer_not_found",
+        error.PrinterFailed, error.SpoolerOpenFailed, error.SpoolerJobFailed => "printer_failed",
+        error.PrintUnknown => "print_unknown",
+        error.DrawerUnknown => "drawer_unknown",
         error.DatabaseBusy => "database_busy",
         error.DiskFull => "disk_full",
         else => "database_unavailable",
@@ -454,4 +536,213 @@ test "POS bridge creates quotes and commits a cash sale only once" {
     const saved_item = detail.object.get("sale").?.object.get("items").?.array.items[0];
     try std.testing.expectEqualStrings(input.name, saved_item.object.get("name").?.string);
     try std.testing.expectEqual(@as(i64, 15_001), saved_item.object.get("unit_price").?.integer);
+}
+
+test "device bridge round trips config and rejects wrong types and unknown fields" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    const initial = try testResult(try testCommand(a, db, "device.get", @as(struct {}, .{})));
+    try std.testing.expectEqual(@as(i64, 80), initial.object.get("config").?.object.get("paper_width").?.integer);
+    var config = device.defaultConfig();
+    config.paper_width = 58;
+    config.footer = "Terima kasih";
+    _ = try testResult(try testCommand(a, db, "device.save", config));
+    const loaded = try testResult(try testCommand(a, db, "device.get", @as(struct {}, .{})));
+    try std.testing.expectEqualStrings(config.footer, loaded.object.get("config").?.object.get("footer").?.string);
+    try std.testing.expectEqual(@as(i64, 58), loaded.object.get("config").?.object.get("paper_width").?.integer);
+
+    const encoded = try std.json.Stringify.valueAlloc(a, config, .{});
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, encoded, .{});
+    var bad = parsed.value;
+    try bad.object.put("show_sku", .{ .integer = 1 });
+    try testFailure(try testCommand(a, db, "device.save", bad), "invalid_payload");
+    try bad.object.put("show_sku", .{ .bool = false });
+    try bad.object.put("paper_width", .{ .string = "58" });
+    try testFailure(try testCommand(a, db, "device.save", bad), "invalid_payload");
+    try bad.object.put("paper_width", .{ .integer = 70 });
+    try testFailure(try testCommand(a, db, "device.save", bad), "invalid_device_config");
+    try bad.object.put("paper_width", .{ .integer = 58 });
+    try bad.object.put("extra", .{ .bool = true });
+    try testFailure(try testCommand(a, db, "device.save", bad), "invalid_payload");
+    _ = bad.object.swapRemove("extra");
+    _ = bad.object.swapRemove("header");
+    try testFailure(try testCommand(a, db, "device.save", bad), "invalid_payload");
+    try testFailure(try testCommand(a, db, "device.get", .{ .extra = true }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "device.printers", .{ .extra = true }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "device.test_print", .{ .extra = true }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "device.open_drawer", .{ .extra = true }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "receipt.print", .{ .id = 0 }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "receipt.reprint", .{ .id = 1, .sql = "DELETE FROM sale" }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "receipt.preview", .{ .id = "1" }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "receipt.preview", .{ .id = 999 }), "sale_not_found");
+}
+
+fn deviceBridgeSale(db: Database, a: std.mem.Allocator) !i64 {
+    try db.saveBusiness(.{ .name = "Toko Perangkat", .mode = "retail", .address = "Jalan Uji" });
+    const product = try pos.saveProduct(db, a, .{ .id = null, .revision = null, .name = "Kopi", .sku = "KOPI", .barcode = "", .category = "", .unit = "pcs", .price = 10_000, .cost = 5_000, .stock_milli = 5_000 });
+    const lines = [_]pos.CartLine{.{ .product_id = product.id, .revision = product.revision, .quantity_milli = 1000, .discount_kind = "none", .discount_value = 0, .note = "" }};
+    const sale = try pos.checkout(db, a, .{ .checkout_id = "bridge-device-seed", .cart = .{ .lines = &lines, .discount_kind = "none", .discount_value = 0, .cash_rounding_increment = 1 }, .tendered = 10_000, .expected_total = 10_000 });
+    return sale.id;
+}
+
+test "receipt bridge previews exact bytes and submits print reprint and drawer through a file" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const directory = try temp.dir.realpathAlloc(a, ".");
+    const path = try std.fmt.allocPrint(a, "{s}/bridge-receipt.bin", .{directory});
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    const sale_id = try deviceBridgeSale(db, a);
+    var config = device.defaultConfig();
+    config.printer_kind = "file";
+    config.file_path = path;
+    _ = try testResult(try testCommand(a, db, "device.save", config));
+
+    const preview = try testResult(try testCommand(a, db, "receipt.preview", .{ .id = sale_id }));
+    try std.testing.expect(std.mem.indexOf(u8, preview.object.get("text").?.string, "Toko Perangkat") != null);
+    const base64 = preview.object.get("escpos_base64").?.string;
+    const decoder = std.base64.standard.Decoder;
+    const decoded = try a.alloc(u8, try decoder.calcSizeForSlice(base64));
+    try decoder.decode(decoded, base64);
+    const direct = try device.previewSale(db, a, sale_id);
+    try std.testing.expectEqualSlices(u8, direct.bytes, decoded);
+    try std.testing.expectEqual(@as(i64, 0), try db.integer("SELECT count(*) FROM audit_log;"));
+
+    const printed = try testResult(try testCommand(a, db, "receipt.print", .{ .id = sale_id }));
+    try std.testing.expect(printed.object.get("submitted").?.bool);
+    try std.testing.expect(!printed.object.get("is_copy").?.bool);
+    const written = try std.fs.cwd().readFileAlloc(a, path, max_message_bytes);
+    try std.testing.expectEqualSlices(u8, decoded, written);
+    const reprinted = try testResult(try testCommand(a, db, "receipt.reprint", .{ .id = sale_id }));
+    try std.testing.expect(reprinted.object.get("is_copy").?.bool);
+    const copy = try std.fs.cwd().readFileAlloc(a, path, max_message_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, copy, "*** SALINAN ***") != null);
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM audit_log WHERE kind='reprint';"));
+    _ = try testResult(try testCommand(a, db, "device.test_print", @as(struct {}, .{})));
+    const diagnostic = try std.fs.cwd().readFileAlloc(a, path, max_message_bytes);
+    try std.testing.expect(std.mem.indexOf(u8, diagnostic, "UJI-CETAK") != null);
+    _ = try testResult(try testCommand(a, db, "device.open_drawer", @as(struct {}, .{})));
+    const drawer = try std.fs.cwd().readFileAlloc(a, path, 64);
+    try std.testing.expectEqualSlices(u8, &.{ 0x1B, '@', 0x1B, 'p', 0, 25, 250 }, drawer);
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM audit_log WHERE kind='drawer_open';"));
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM sale;"));
+    try std.testing.expectEqual(@as(i64, 4000), try db.integer("SELECT stock_milli FROM product;"));
+}
+
+test "printer failures stay separate from checkout and database failures" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const directory = try temp.dir.realpathAlloc(a, ".");
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    const sale_id = try deviceBridgeSale(db, a);
+    try testFailure(try testCommand(a, db, "receipt.print", .{ .id = sale_id }), "invalid_device_config");
+    try testFailure(try testCommand(a, db, "device.test_print", @as(struct {}, .{})), "invalid_device_config");
+    var config = device.defaultConfig();
+    config.printer_kind = "file";
+    config.file_path = try std.fmt.allocPrint(a, "{s}/missing/print.bin", .{directory});
+    _ = try testResult(try testCommand(a, db, "device.save", config));
+    try testFailure(try testCommand(a, db, "receipt.print", .{ .id = sale_id }), "printer_failed");
+    try testFailure(try testCommand(a, db, "receipt.reprint", .{ .id = sale_id }), "printer_failed");
+    try testFailure(try testCommand(a, db, "device.open_drawer", @as(struct {}, .{})), "printer_failed");
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM sale;"));
+    try std.testing.expectEqual(@as(i64, 4000), try db.integer("SELECT stock_milli FROM product;"));
+    try std.testing.expectEqual(@as(i64, 2), try db.integer("SELECT count(*) FROM audit_log WHERE detail='failed';"));
+}
+
+test "device bridge distinguishes ambiguous output from definite failure" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const directory = try temp.dir.realpathAlloc(a, ".");
+    const path = try std.fmt.allocPrint(a, "{s}/ambiguous.bin", .{directory});
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    const id = try deviceBridgeSale(db, a);
+    var config = device.defaultConfig();
+    config.printer_kind = "file";
+    config.file_path = path;
+    try device.saveConfig(db, config);
+    try db.exec("CREATE TRIGGER reject_completion BEFORE UPDATE ON audit_log BEGIN SELECT RAISE(ABORT,'audit unavailable'); END;");
+    try testFailure(try testCommand(a, db, "receipt.reprint", .{ .id = id }), "print_unknown");
+    try testFailure(try testCommand(a, db, "device.open_drawer", @as(struct {}, .{})), "drawer_unknown");
+    try std.testing.expectEqual(@as(i64, 2), try db.integer("SELECT count(*) FROM audit_log WHERE detail='attempt';"));
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM sale;"));
+}
+
+test "receipt previews obey the native response cap even for large documents" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    try db.saveBusiness(.{ .name = "Large Receipt", .mode = "retail", .address = "" });
+    var lines: [40]pos.CartLine = undefined;
+    for (&lines, 0..) |*line, i| {
+        const product = try pos.saveProduct(db, a, .{ .id = null, .revision = null, .name = "Long product name repeated to deliberately exercise the receipt payload response size limit without truncating sale data", .sku = try std.fmt.allocPrint(a, "SKU-{d}", .{i}), .barcode = "", .category = "", .unit = "pcs", .price = 100, .cost = 50, .stock_milli = null });
+        line.* = .{ .product_id = product.id, .revision = product.revision, .quantity_milli = 1000, .discount_kind = "none", .discount_value = 0, .note = "Long customer note repeated to deliberately exercise receipt wrapping and the response limit; printing must never be triggered by requesting the preview alone." };
+    }
+    const sale = try pos.checkout(db, a, .{ .checkout_id = "large-preview", .cart = .{ .lines = &lines, .discount_kind = "none", .discount_value = 0, .cash_rounding_increment = 1 }, .tendered = 4000, .expected_total = 4000 });
+    var config = device.defaultConfig();
+    config.copies = 5;
+    try device.saveConfig(db, config);
+    try testFailure(try testCommand(a, db, "receipt.preview", .{ .id = sale.id }), "message_too_large");
+    try std.testing.expectEqual(@as(i64, 40), try db.integer("SELECT count(*) FROM sale_item;"));
+    try std.testing.expectEqual(@as(i64, 0), try db.integer("SELECT count(*) FROM audit_log;"));
+}
+
+test "printer acknowledgements allocate before IO and free every allocation on failure" {
+    const allocator = std.testing.allocator;
+    var completed = false;
+    for (0..500) |fail_index| {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const a = arena.allocator();
+        var temp = std.testing.tmpDir(.{});
+        defer temp.cleanup();
+        const directory = try temp.dir.realpathAlloc(a, ".");
+        const path = try std.fmt.allocPrint(a, "{s}/allocation.bin", .{directory});
+        const db = try Database.open(":memory:");
+        defer db.close();
+        try db.migrate(a, ":memory:");
+        const id = try deviceBridgeSale(db, a);
+        var config = device.defaultConfig();
+        config.printer_kind = "file";
+        config.file_path = path;
+        try device.saveConfig(db, config);
+        const input = try std.json.Stringify.valueAlloc(a, .{ .id = "allocation-print", .command = "receipt.reprint", .payload = .{ .id = id } }, .{});
+        var failing = std.testing.FailingAllocator.init(allocator, .{ .fail_index = fail_index });
+        const response = dispatch(failing.allocator(), db, input) catch |err| blk: {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            break :blk null;
+        };
+        if (response) |encoded| failing.allocator().free(encoded);
+        try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+        if (failing.has_induced_failure) {
+            try std.testing.expectError(error.FileNotFound, std.fs.cwd().access(path, .{}));
+            try std.testing.expectEqual(@as(i64, 0), try db.integer("SELECT count(*) FROM audit_log;"));
+        } else {
+            try std.fs.cwd().access(path, .{});
+            try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM audit_log WHERE detail='submitted';"));
+            completed = true;
+            break;
+        }
+    }
+    try std.testing.expect(completed);
 }
