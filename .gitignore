@@ -1,0 +1,13 @@
+.tools/
+.cache/
+.zig-cache/
+zig-out/
+vendor/sqlite/
+vendor/webview2/
+.impeccable/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm

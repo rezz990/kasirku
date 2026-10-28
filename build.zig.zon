@@ -1,0 +1,7 @@
+.{
+    .name = .kasirku,
+    .version = "0.1.0",
+    .fingerprint = 0xde3ab2e92909fcac,
+    .minimum_zig_version = "0.15.2",
+    .paths = .{ "build.zig", "build.zig.zon", "src", "ui", "tools" },
+}
