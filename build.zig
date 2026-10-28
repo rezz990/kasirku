@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) void {
     addSqlite(b, app_module);
     app_module.addIncludePath(b.path("vendor/webview2/build/native/include"));
     app_module.addCSourceFile(.{ .file = b.path("src/infra/webview/host.cpp"), .flags = &.{ "-std=c++17", "-fms-extensions", "-fno-exceptions", "-fno-rtti", "-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00" } });
-    for ([_][]const u8{ "user32", "ole32", "shell32", "shlwapi", "gdi32", "advapi32", "uuid" }) |library| app_module.linkSystemLibrary(library, .{});
+    for ([_][]const u8{ "user32", "ole32", "shell32", "shlwapi", "gdi32", "advapi32", "uuid", "winspool", "ws2_32" }) |library| app_module.linkSystemLibrary(library, .{});
     const exe = b.addExecutable(.{ .name = "KasirKu", .root_module = app_module });
     exe.subsystem = .Windows;
     b.installArtifact(exe);
@@ -23,9 +23,22 @@ pub fn build(b: *std.Build) void {
 
     const tests_module = b.createModule(.{ .root_source_file = b.path("src/tests.zig"), .target = target, .optimize = .Debug, .link_libc = true });
     addSqlite(b, tests_module);
+    for ([_][]const u8{ "winspool", "ws2_32" }) |library| tests_module.linkSystemLibrary(library, .{});
+    const golden_options = b.addOptions();
+    golden_options.addOptionPath("dir", b.path("testdata/receipt"));
+    tests_module.addImport("golden_options", golden_options.createModule());
     const tests = b.addTest(.{ .root_module = tests_module });
     const run_tests = b.addRunArtifact(tests);
     b.step("test", "Run domain, database and bridge tests").dependOn(&run_tests.step);
+
+    const golden_module = b.createModule(.{ .root_source_file = b.path("src/domain/receipt_golden_gen.zig"), .target = target, .optimize = .Debug, .link_libc = true });
+    const gen_options = b.addOptions();
+    gen_options.addOptionPath("dir", b.path("testdata/receipt"));
+    golden_module.addImport("golden_options", gen_options.createModule());
+    const golden_exe = b.addExecutable(.{ .name = "receipt-golden", .root_module = golden_module });
+    const run_golden = b.addRunArtifact(golden_exe);
+    run_golden.addDirectoryArg(b.path("testdata/receipt"));
+    b.step("golden", "Regenerate receipt ESC/POS golden reference bytes").dependOn(&run_golden.step);
 
     const run = b.addSystemCommand(&.{b.getInstallPath(.bin, "KasirKu.exe")});
     run.step.dependOn(b.getInstallStep());
