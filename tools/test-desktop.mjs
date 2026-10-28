@@ -197,6 +197,7 @@ try {
   await session.evaluate(`document.querySelector('#payment-form').requestSubmit();`);
   await session.waitFor(`document.querySelector('#payment-success').hidden===false`);
   assert.match(await session.evaluate(`document.querySelector('#payment-receipt .receipt-item-heading').textContent`), /4\.950/);
+  await session.waitFor(`document.querySelector('#print-notice').textContent.includes('belum diatur')`);
   const receiptScreenshot = await session.call('Page.captureScreenshot',{format:'png'});
   await writeFile(path.join(root,'.cache','receipt-native.png'),Buffer.from(receiptScreenshot.data,'base64'));
   const uiSummary = (await command(session,'sale.list',{date:'',offset:0})).sales[0];
@@ -209,6 +210,11 @@ try {
   await session.waitFor(`document.querySelector('#sale-list button')!==null`);
   await session.evaluate(`document.querySelector('#sale-list button').click();`);
   await session.waitFor(`document.querySelector('#history-receipt').textContent.includes('Kopi susu')`);
+  await session.evaluate(`document.querySelector('#receipt-reprint').click();`);
+  await session.waitFor(`document.querySelector('#reprint-notice').textContent.includes('belum diatur')`);
+  await session.evaluate(`document.querySelector('[data-nav="device"]').click();`);
+  await session.waitFor(`document.querySelector('#device-fields').disabled===false && document.querySelector('#device-paper pre')!==null`);
+  assert.equal(await session.evaluate(`document.querySelector('#device-paper').dataset.width`), '80');
   await session.call('Page.navigate', { url: 'https://blocked.invalid/' });
   assert.equal(await session.evaluate('location.href'), 'https://kasirku.local/index.html');
 } finally { await session.close(); }

@@ -210,7 +210,12 @@ pub fn build(a: std.mem.Allocator, sale: anytype, template: Template, is_copy: b
             try lines.append(a, try leftText(a, seg(try std.fmt.allocPrint(a, "  SKU: {s}", .{item.sku}))));
         }
         if (template.show_barcode and item.barcode.len > 0) {
-            try lines.append(a, .{ .barcode = .{ .data = item.barcode, .height_dots = 60 } });
+            // Catalog barcodes are free text; one that cannot be drawn must not block the whole receipt.
+            if (validateBarcode(item.barcode, template.width)) |_| {
+                try lines.append(a, .{ .barcode = .{ .data = item.barcode, .height_dots = 60 } });
+            } else |_| {
+                try lines.append(a, try leftText(a, seg(try std.fmt.allocPrint(a, "  Barcode: {s}", .{item.barcode}))));
+            }
         }
     }
 
@@ -1248,4 +1253,27 @@ fn exerciseAllAllocationFailures(a: std.mem.Allocator) !void {
         _ = try renderEscPos(work, receipt, template);
         _ = try renderText(work, receipt, template);
     }
+}
+
+test "catalog barcodes that cannot be drawn fall back to text instead of blocking the receipt" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var template = sampleTemplate(.mm58);
+    template.show_barcode = true;
+    var items = sampleSale().items[0..2].*;
+    items[0].barcode = "8991234567890";
+    items[1].barcode = "abc-1";
+    var sale = sampleSale();
+    sale.items = &items;
+    const receipt = try build(a, sale, template, false);
+    const text = try renderText(a, receipt, template);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Barcode: 8991234567890") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Barcode: abc-1") != null);
+    const bytes = try renderEscPos(a, receipt, template);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, &.{ 0x1D, 'k', 69 }) == null);
+
+    template.width = .mm80;
+    const wide = try renderEscPos(a, try build(a, sale, template, false), template);
+    try std.testing.expect(std.mem.indexOf(u8, wide, &.{ 0x1D, 'k', 69, 13 }) != null);
 }

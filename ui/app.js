@@ -1,5 +1,6 @@
 import { id as strings } from './strings.js';
 import { initPOS } from './pos.js';
+import { initDevice } from './device.js';
 
 const text = (key) => strings[key] ?? strings.unexpected;
 for (const element of document.querySelectorAll('[data-i18n]')) element.textContent = text(element.dataset.i18n);
@@ -52,7 +53,8 @@ bridge?.addEventListener('message', ({ data }) => {
   else entry.reject(new Error(data.error?.code ?? 'unexpected'));
 });
 
-const pos = initPOS({ request, available: Boolean(bridge) });
+const device = initDevice({ request, available: Boolean(bridge) });
+const pos = initPOS({ request, available: Boolean(bridge), device });
 
 function showBusiness(value) {
   document.querySelector('#business-name').value = value.name;

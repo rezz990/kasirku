@@ -68,6 +68,8 @@ const mock = `(() => {
   window.__dropCheckoutAck = false; window.__unknownCheckoutAck = false;
   window.__checkoutErrorOnce = null;
   window.__quoteTotal = 9900;
+  window.__deviceConfig = {printer_kind:'spooler',printer_name:'',file_path:'',tcp_host:'',tcp_port:9100,paper_width:80,header:'',footer:'',qr_payload:'',copies:1,feed_lines:3,show_sku:false,show_barcode:false,show_qr:false,cash_drawer:true,cut_paper:true};
+  window.__logo = null; window.__printError = null;
   window.chrome = window.chrome || {};
   window.chrome.webview = {
     addEventListener(type, callback) { if (type === 'message') listeners.push(callback); },
@@ -107,6 +109,22 @@ const mock = `(() => {
       else if (message.command === 'business.save') {
         if (window.__failNext) { window.__failNext = false; error = { code: 'disk_full' }; }
         else { business = message.payload; result = { saved: true }; }
+      }
+      else if (message.command === 'device.get') result = { config: { ...window.__deviceConfig }, logo: window.__logo };
+      else if (message.command === 'device.save') { window.__deviceConfig = { ...message.payload }; result = { saved: true }; }
+      else if (message.command === 'device.preview') {
+        const c = message.payload;
+        result = { text: [...(window.__logo ? ['[logo]'] : []), business.name, c.header, '-'.repeat(c.paper_width === 58 ? 32 : 48), 'TOTAL 9.900', c.footer].join('\\n') + '\\n', width: c.paper_width };
+      }
+      else if (message.command === 'device.printers') result = { printers: [{ name: 'Microsoft Print to PDF', is_default: false }, { name: 'POS-80', is_default: true }] };
+      else if (message.command === 'device.logo_save') { window.__logo = { ...message.payload }; result = { saved: true }; }
+      else if (message.command === 'device.logo_clear') { window.__logo = null; result = { saved: true }; }
+      else if (message.command === 'device.test_print' || message.command === 'device.open_drawer') result = { submitted: true };
+      else if (message.command === 'receipt.print' || message.command === 'receipt.reprint') {
+        const c = window.__deviceConfig;
+        if (!c.printer_name && !c.tcp_host && !c.file_path) error = { code: 'invalid_device_config' };
+        else if (window.__printError) { error = { code: window.__printError }; window.__printError = null; }
+        else result = { submitted: true, is_copy: message.command === 'receipt.reprint' };
       } else error = { code: 'unknown_command' };
       const deliver = () => listeners.forEach(callback => callback({ data: { id: message.id, ok: !error, result, error } }));
       if (message.command === 'system.ping' && window.__deferPing) window.__pendingPing = deliver;
@@ -245,6 +263,8 @@ try {
   assert.deepEqual(attempts[0], attempts[2]);
   assert.equal(await evaluate(`window.__sales.length`), 1);
   assert.equal(await evaluate(`document.querySelector('#payment-receipt img')!==null`), false);
+  await waitFor(`document.querySelector('#print-notice').textContent.includes('belum diatur')`);
+  assert.equal(await evaluate(`document.querySelector('#print-retry').hidden && document.querySelector('#print-copy').hidden`), true);
   await evaluate(`document.querySelector('#new-sale').click();`);
   await addCart();
   await evaluate(`window.__dropCheckoutAck=true;document.querySelector('#pay').click();document.querySelector('[data-tender="exact"]').click();document.querySelector('#payment-form').requestSubmit();`);
@@ -255,6 +275,63 @@ try {
   assert.deepEqual(attempts[3], attempts[4]);
   assert.notEqual(attempts[0].checkout_id, attempts[3].checkout_id);
   assert.equal(await evaluate(`window.__sales.length`), 2);
+  await evaluate(`document.querySelector('#new-sale').click();document.querySelector('[data-nav="device"]').click();`);
+  await waitFor(`document.querySelector('#device-fields').disabled===false && document.querySelector('#device-paper pre')!==null`);
+  assert.equal(await evaluate(`document.querySelector('#device-test-print').disabled`), true);
+  assert.equal(await evaluate(`document.querySelector('#device-save').disabled`), true);
+  await evaluate(`document.querySelector('#device-detect').click();`);
+  await waitFor(`document.querySelector('#device-printer-name').value==='POS-80' && document.querySelector('#device-save').disabled===false`);
+  assert.equal(await evaluate(`document.querySelector('#device-test-print').disabled`), true);
+  await evaluate(`const h=document.querySelector('#device-header');h.value='<b>Promo</b>';h.dispatchEvent(new Event('input',{bubbles:true}));const w=document.querySelector('input[name="paper_width"][value="58"]');w.checked=true;w.dispatchEvent(new Event('change',{bubbles:true}));`);
+  await waitFor(`document.querySelector('#device-paper').dataset.width==='58' && document.querySelector('#device-paper').textContent.includes('<b>Promo</b>')`);
+  assert.equal(await evaluate(`document.querySelector('#device-paper b')!==null`), false);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='device.preview').at(-1).payload.paper_width`), 58);
+  await evaluate(`window.confirm=()=>false;document.querySelector('[data-nav="cashier"]').click();`);
+  assert.equal(await evaluate(`document.querySelector('#device-screen').hidden`), false);
+  for (const [width, height] of [[1366,768],[1000,640]]) {
+    await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+    assert.ok(await evaluate(`(()=>{const r=document.querySelector('#device-save').getBoundingClientRect();return r.height>=44&&r.bottom<=innerHeight;})()`), `Device save outside viewport at ${width}x${height}`);
+    assert.ok(await evaluate(`document.querySelector('.paper-frame').scrollWidth<=document.querySelector('.paper-frame').clientWidth`), `Receipt preview overflows at ${width}x${height}`);
+    const screenshot = await call('Page.captureScreenshot', { format: 'png' });
+    await writeFile(path.join(cache, `device-ui-${width}x${height}.png`), Buffer.from(screenshot.data,'base64'));
+  }
+  await evaluate(`document.querySelector('#device-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#device-test-print').disabled===false`);
+  assert.deepEqual(await evaluate(`[window.__deviceConfig.printer_name, window.__deviceConfig.paper_width, window.__deviceConfig.header]`), ['POS-80', 58, '<b>Promo</b>']);
+  await evaluate(`document.querySelector('#device-test-print').click();`);
+  await waitFor(`document.querySelector('#device-test-notice').hidden===false && document.querySelector('#device-test-print').disabled===false`);
+  assert.equal(await evaluate(`window.__requests.some(r=>r.command==='device.test_print')`), true);
+  await evaluate(`(async()=>{const c=new OffscreenCanvas(600,200);const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,600,200);x.fillStyle='#000';x.fillRect(50,50,500,100);const blob=await c.convertToBlob({type:'image/png'});const t=new DataTransfer();t.items.add(new File([blob],'logo.png',{type:'image/png'}));const input=document.querySelector('#device-logo-file');input.files=t.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+  await waitFor(`document.querySelector('#device-paper canvas')!==null`);
+  assert.deepEqual(await evaluate(`[window.__logo.width, window.__logo.height, atob(window.__logo.bits_base64).length]`), [384, 128, 48 * 128]);
+  assert.equal(await evaluate(`document.querySelector('#device-paper').textContent.includes('[logo]')`), false);
+  await evaluate(`const s=document.querySelector('#scanner-input');s.value='UI-01';document.querySelector('#scanner-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#scanner-result .scan-match')!==null`);
+  assert.equal(await evaluate(`document.querySelector('#scanner-result img')!==null`), false);
+  await evaluate(`document.querySelector('[data-nav="history"]').click();`);
+  await waitFor(`document.querySelector('#sale-list button')!==null`);
+  await evaluate(`document.querySelector('#sale-list button').click();`);
+  await waitFor(`document.querySelector('#reprint-bar').hidden===false`);
+  await evaluate(`document.querySelector('#receipt-reprint').click();`);
+  await waitFor(`document.querySelector('#reprint-notice').textContent.includes('SALINAN')`);
+  await evaluate(`window.__printError='print_unknown';document.querySelector('#receipt-reprint').click();`);
+  await waitFor(`document.querySelector('#reprint-notice').textContent.includes('mungkin')`);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='receipt.reprint').length`), 2);
+  await evaluate(`document.querySelector('[data-nav="cashier"]').click();`);
+  await waitFor(`document.querySelector('#product-list button[data-action="add"]')!==null`);
+  await addCart();
+  await evaluate(`window.__printError='printer_unreachable';document.querySelector('#pay').click();document.querySelector('[data-tender="exact"]').click();document.querySelector('#payment-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#print-retry').hidden===false`);
+  assert.equal(await evaluate(`document.querySelector('#print-copy').hidden`), true);
+  const afterCheckout = await evaluate(`(()=>{const i=window.__requests.findLastIndex(r=>r.command==='sale.checkout');return window.__requests.slice(i+1).map(r=>r.command);})()`);
+  assert.ok(afterCheckout.indexOf('receipt.print') === 0, `Receipt print was not first after checkout: ${afterCheckout}`);
+  await evaluate(`document.querySelector('#print-retry').click();`);
+  await waitFor(`document.querySelector('#print-notice').textContent.includes('terkirim') && document.querySelector('#print-copy').hidden===false`);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='receipt.print').at(-1).payload.id`), 3);
+  await evaluate(`window.__printError='print_unknown';document.querySelector('#print-copy').click();`);
+  await waitFor(`document.querySelector('#print-notice').textContent.includes('mungkin') && document.querySelector('#print-copy').hidden===false`);
+  assert.equal(await evaluate(`document.querySelector('#print-retry').hidden`), true);
   await evaluate(`document.querySelector('#new-sale').click();document.querySelector('[data-nav="history"]').click();`);
   await waitFor(`document.querySelector('#sale-list button')!==null`);
   await evaluate(`document.querySelector('#sale-list button').click();`);
@@ -270,7 +347,7 @@ try {
   await waitFor(`document.querySelector('#quote-notice').textContent.includes('berubah')`);
   assert.equal(await evaluate(`document.querySelector('#pay').disabled`), true);
   assert.deepEqual(errors, []);
-  console.log('UI tests passed: setup regression, product entry, decimal quantity/discount parsing, escaped text, checkout_unknown and dropped acknowledgement same-key recovery, history, stale-product blocking and desktop layouts. Financial totals are mocked; native tests verify Zig/SQLite.');
+  console.log('UI tests passed: setup regression, product entry, decimal quantity/discount parsing, escaped text, checkout_unknown and dropped acknowledgement same-key recovery, history, device settings with live preview/logo/scanner, auto-print outcomes, SALINAN reprint, stale-product blocking and desktop layouts. Financial totals are mocked; native tests verify Zig/SQLite.');
   const styles = await readFile(path.join(root, 'ui/styles.css'), 'utf8');
   assert.match(styles, /prefers-reduced-motion/);
   const exited = once(browser, 'exit');

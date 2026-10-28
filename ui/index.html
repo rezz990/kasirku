@@ -16,6 +16,7 @@
       <button type="button" data-nav="cashier" data-i18n="cashier" disabled></button>
       <button type="button" data-nav="products" data-i18n="products" disabled></button>
       <button type="button" data-nav="history" data-i18n="history" disabled></button>
+      <button type="button" data-nav="device" data-i18n="device" disabled></button>
       <button type="button" data-nav="business" data-i18n="business" aria-current="page"></button>
     </nav>
     <div class="header-context"><span id="header-business"></span><span class="connection" id="connection" role="status" data-i18n="connecting"></span></div>
@@ -85,14 +86,59 @@
   </main>
   <main id="history-screen" class="history-workspace" hidden>
     <section class="history-panel" aria-labelledby="history-title"><div class="panel-heading"><div><h1 id="history-title" data-i18n="historyTitle" tabindex="-1"></h1><p data-i18n="historyCopy"></p></div></div><div class="history-filter"><div class="field"><label for="history-date" data-i18n="historyDate"></label><input id="history-date" type="date"></div><button type="button" id="history-all" class="secondary-button compact" data-i18n="allDates"></button></div><p id="history-notice" class="notice" role="status" hidden></p><div id="history-content" class="history-content"><div id="sale-list"></div><div id="history-empty" class="empty-state" hidden><h2 id="history-empty-title" data-i18n="noSales"></h2><p data-i18n="noSalesCopy"></p></div><button type="button" id="history-retry" class="secondary-button compact" data-i18n="retry" hidden></button></div><div class="pagination"><nav data-i18n-aria="historyPaging"><button type="button" id="history-prev" class="plain-button" data-i18n="previous" disabled></button><span id="history-page"></span><button type="button" id="history-next" class="plain-button" data-i18n="next" disabled></button></nav></div></section>
-    <section id="history-detail" class="history-detail" data-i18n-aria="receipt"><div id="receipt-placeholder" class="empty-state"><h2 data-i18n="receiptEmpty"></h2><p data-i18n="receiptEmptyCopy"></p></div><p id="receipt-notice" class="notice" role="status" hidden></p><button type="button" id="receipt-retry" class="secondary-button compact" data-i18n="retry" hidden></button><div id="history-receipt"></div></section>
+    <section id="history-detail" class="history-detail" data-i18n-aria="receipt"><div id="receipt-placeholder" class="empty-state"><h2 data-i18n="receiptEmpty"></h2><p data-i18n="receiptEmptyCopy"></p></div><p id="receipt-notice" class="notice" role="status" hidden></p><button type="button" id="receipt-retry" class="secondary-button compact" data-i18n="retry" hidden></button><div id="reprint-bar" class="reprint-bar" hidden><button type="button" id="receipt-reprint" class="secondary-button compact" data-i18n="reprint"></button><p id="reprint-notice" class="notice" role="status" hidden></p></div><div id="history-receipt"></div></section>
+  </main>
+  <main id="device-screen" class="device-workspace" hidden>
+    <section class="device-settings" aria-labelledby="device-title">
+      <form id="device-form" novalidate>
+        <div class="panel-heading"><div><h1 id="device-title" data-i18n="deviceTitle" tabindex="-1"></h1><p data-i18n="deviceCopy"></p></div><button type="button" id="device-reload" class="secondary-button compact" data-i18n="retry" hidden></button></div>
+        <p id="device-notice" class="notice" role="status" hidden></p>
+        <div class="device-scroll"><fieldset id="device-fields" disabled>
+          <section class="device-section" aria-labelledby="printer-heading"><h2 id="printer-heading" data-i18n="printerSection"></h2>
+            <fieldset class="segmented"><legend data-i18n="printerKind"></legend><div class="segments">
+              <label><input type="radio" name="printer_kind" value="spooler" checked><span data-i18n="printerSpooler"></span></label>
+              <label><input type="radio" name="printer_kind" value="tcp"><span data-i18n="printerTcp"></span></label>
+              <label><input type="radio" name="printer_kind" value="file"><span data-i18n="printerFile"></span></label>
+            </div></fieldset>
+            <div id="device-spooler-fields"><div class="field"><label for="device-printer-name" data-i18n="printerName"></label><div class="inline-control"><select id="device-printer-name" aria-describedby="printer-name-hint"></select><button type="button" id="device-detect" class="secondary-button compact" data-i18n="detectPrinters"></button></div><span id="printer-name-hint" class="field-hint" data-i18n="printerNameHint"></span></div><p id="device-printer-notice" class="notice" role="status" hidden></p></div>
+            <div id="device-tcp-fields" class="field-pair" hidden><div class="field"><label for="device-tcp-host" data-i18n="tcpHost"></label><input id="device-tcp-host" maxlength="255" autocomplete="off" spellcheck="false" data-i18n-placeholder="tcpHostPlaceholder"></div><div class="field"><label for="device-tcp-port" data-i18n="tcpPort"></label><input id="device-tcp-port" inputmode="numeric" maxlength="5" autocomplete="off"></div></div>
+            <div id="device-file-fields" class="field" hidden><label for="device-file-path" data-i18n="filePath"></label><input id="device-file-path" maxlength="512" autocomplete="off" spellcheck="false" aria-describedby="file-path-hint" data-i18n-placeholder="filePathPlaceholder"><span id="file-path-hint" class="field-hint" data-i18n="filePathHint"></span></div>
+          </section>
+          <section class="device-section" aria-labelledby="design-heading"><h2 id="design-heading" data-i18n="receiptSection"></h2>
+            <fieldset class="segmented"><legend data-i18n="paperWidth"></legend><div class="segments">
+              <label><input type="radio" name="paper_width" value="58"><span data-i18n="paper58"></span></label>
+              <label><input type="radio" name="paper_width" value="80" checked><span data-i18n="paper80"></span></label>
+            </div></fieldset>
+            <div class="business-source"><p data-i18n="businessOnReceipt"></p><button type="button" id="device-edit-business" class="text-button" data-i18n="editBusinessProfile"></button></div>
+            <div class="logo-field"><span class="field-label" data-i18n="logoLabel"></span><p id="device-logo-status"></p><div class="logo-actions"><label id="device-logo-pick" class="secondary-button compact file-button"><input type="file" id="device-logo-file" class="sr-only" accept="image/png,image/jpeg,image/bmp,image/gif,image/webp" aria-describedby="logo-hint"><span data-i18n="logoChoose"></span></label><button type="button" id="device-logo-clear" class="text-button danger" data-i18n="logoClear" hidden></button></div><span id="logo-hint" class="field-hint" data-i18n="logoHint"></span><p id="device-logo-notice" class="notice" role="status" hidden></p></div>
+            <div class="field"><label for="device-header" data-i18n="receiptHeader"></label><textarea id="device-header" rows="2" maxlength="512" aria-describedby="receipt-text-hint" data-i18n-placeholder="receiptHeaderPlaceholder"></textarea></div>
+            <div class="field"><label for="device-footer" data-i18n="receiptFooter"></label><textarea id="device-footer" rows="2" maxlength="512" aria-describedby="receipt-text-hint" data-i18n-placeholder="footerPlaceholder"></textarea><span id="receipt-text-hint" class="field-hint" data-i18n="receiptTextHint"></span></div>
+            <label class="check-label"><input id="device-show-sku" type="checkbox"><span data-i18n="showSku"></span></label>
+            <label class="check-label"><input id="device-show-barcode" type="checkbox"><span data-i18n="showBarcode"></span></label>
+            <label class="check-label"><input id="device-show-qr" type="checkbox"><span data-i18n="showQr"></span></label>
+            <div class="field"><label for="device-qr-payload" data-i18n="qrPayload"></label><input id="device-qr-payload" maxlength="512" autocomplete="off" spellcheck="false" data-i18n-placeholder="qrPlaceholder"></div>
+          </section>
+          <section class="device-section" aria-labelledby="printing-heading"><h2 id="printing-heading" data-i18n="printingSection"></h2>
+            <div class="field-pair"><div class="field"><label for="device-copies" data-i18n="copies"></label><select id="device-copies"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5">5</option></select></div><div class="field"><label for="device-feed-lines" data-i18n="feedLines"></label><input id="device-feed-lines" inputmode="numeric" maxlength="2" autocomplete="off" aria-describedby="feed-hint"><span id="feed-hint" class="field-hint" data-i18n="feedHint"></span></div></div>
+            <label class="check-label"><input id="device-cut-paper" type="checkbox"><span data-i18n="cutPaper"></span></label>
+            <label class="check-label"><input id="device-cash-drawer" type="checkbox"><span data-i18n="cashDrawer"></span></label>
+          </section>
+        </fieldset></div>
+        <div class="device-actions"><span id="device-dirty" role="status"></span><button type="submit" id="device-save" class="primary-button" data-i18n="saveDevice" disabled></button></div>
+      </form>
+    </section>
+    <aside class="device-side">
+      <section class="device-card" aria-labelledby="preview-heading"><div class="side-heading"><h2 id="preview-heading" data-i18n="previewHeading"></h2><span id="device-preview-width" class="muted"></span></div><p id="device-preview-notice" class="notice" role="status" hidden></p><div class="paper-frame"><div id="device-paper" class="paper" aria-busy="false" data-i18n-aria="previewHeading"></div></div></section>
+      <section class="device-card" aria-labelledby="test-heading"><h2 id="test-heading" data-i18n="testHeading"></h2><p id="device-test-hint" class="muted device-hint"></p><div class="button-row"><button type="button" id="device-test-print" class="secondary-button" data-i18n="testPrint" disabled></button><button type="button" id="device-test-drawer" class="secondary-button" data-i18n="testDrawer" disabled></button></div><p id="device-test-notice" class="notice" role="status" hidden></p></section>
+      <section class="device-card" aria-labelledby="scanner-heading"><h2 id="scanner-heading" data-i18n="scannerHeading"></h2><p class="muted device-hint" data-i18n="scannerCopy"></p><form id="scanner-form"><label class="sr-only" for="scanner-input" data-i18n="scannerLabel"></label><input id="scanner-input" autocomplete="off" spellcheck="false" maxlength="120" data-i18n-placeholder="scannerPlaceholder" disabled></form><ul id="scanner-result" class="scanner-result" role="status"></ul></section>
+    </aside>
   </main>
   <dialog id="payment-dialog" aria-labelledby="payment-title" aria-describedby="payment-copy">
     <div id="payment-entry"><h2 id="payment-title" data-i18n="paymentTitle"></h2><p id="payment-copy" class="muted" data-i18n="paymentCopy"></p><div class="payment-total"><span data-i18n="payable"></span><strong id="payment-total" class="money"></strong></div><p id="payment-notice" class="notice" role="status" hidden></p>
       <form id="payment-form"><fieldset id="payment-fields"><div class="field"><label for="tendered" data-i18n="tendered"></label><input id="tendered" type="text" inputmode="numeric" autocomplete="off" required aria-describedby="tendered-hint"><span id="tendered-hint" class="field-hint" data-i18n="moneyHint"></span></div><div class="quick-money"><button type="button" data-tender="exact" class="secondary-button" data-i18n="exactMoney"></button><button type="button" data-tender="50000" class="secondary-button" data-i18n="quick50000"></button><button type="button" data-tender="100000" class="secondary-button" data-i18n="quick100000"></button></div></fieldset><div class="change-row" aria-live="polite"><span id="change-label" data-i18n="change"></span><strong id="payment-change" class="money"></strong></div><button type="submit" id="payment-submit" class="primary-button" data-i18n="paymentSubmit" disabled></button></form>
       <button type="button" id="checkout-retry" class="primary-button" data-i18n="retryCheckout" hidden></button><button type="button" id="payment-cancel" class="secondary-button" data-i18n="backToCart"></button>
     </div>
-    <div id="payment-success" hidden><div class="payment-success-heading"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20"/><path d="m15 24 6 6 12-13"/></svg><div><h2 data-i18n="paidTitle" tabindex="-1" id="paid-title"></h2><p class="muted" data-i18n="paidCopy"></p></div></div><div id="payment-receipt"></div><button type="button" id="new-sale" class="primary-button" data-i18n="newSale"></button></div>
+    <div id="payment-success" hidden><div class="payment-success-heading"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20"/><path d="m15 24 6 6 12-13"/></svg><div><h2 data-i18n="paidTitle" tabindex="-1" id="paid-title"></h2><p class="muted" data-i18n="paidCopy"></p></div></div><div class="print-status"><p id="print-notice" class="notice" role="status" hidden></p><div class="button-row"><button type="button" id="print-retry" class="secondary-button" data-i18n="printAgain" hidden></button><button type="button" id="print-copy" class="secondary-button" data-i18n="printCopy" hidden></button></div></div><div id="payment-receipt"></div><button type="button" id="new-sale" class="primary-button" data-i18n="newSale"></button></div>
   </dialog>
   <footer class="app-footer"><span data-i18n="footer"></span><span data-i18n="stageNote"></span></footer>
 </body>

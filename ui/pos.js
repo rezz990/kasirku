@@ -7,6 +7,8 @@ const limit = 9000000000000000n;
 const currency = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
 const totalsKeys = ['gross', 'line_discount', 'subtotal', 'transaction_discount', 'net_subtotal', 'service_charge', 'tax_base', 'tax', 'total_before_rounding', 'rounding_adjustment', 'total'];
 const safeCheckoutErrors = new Set(['invalid_cart', 'invalid_discount', 'product_changed', 'product_not_found', 'insufficient_stock', 'underpayment', 'total_changed', 'disk_full', 'database_busy', 'business_required', 'invalid_payload', 'invalid_request', 'message_too_large']);
+// These fail before any byte reaches the printer; everything else may have printed.
+const definitePrintErrors = new Set(['printer_failed', 'printer_unreachable', 'printer_not_found', 'invalid_receipt', 'sale_not_found', 'database_busy', 'database_unavailable', 'disk_full', 'invalid_payload', 'message_too_large']);
 
 function fixed(value, digits, maximum = limit, code = 'invalidMoney') {
   const source = String(value).trim().replace(',', '.');
@@ -55,6 +57,11 @@ function notice(id, key, error = false, values) {
   element.classList.toggle('error', error);
   element.setAttribute('role', error ? 'alert' : 'status');
   element.dataset.errorKey = key ?? '';
+}
+
+function noticeDetail(id, key, code) {
+  notice(id, key, true);
+  $(id).append(node('span', 'error-detail', text(code)));
 }
 
 function freeze(value) {
@@ -116,7 +123,7 @@ function renderReceipt(container, sale) {
   container.append(receipt);
 }
 
-export function initPOS({ request, available }) {
+export function initPOS({ request, available, device }) {
   let business = null;
   let screen = 'business';
   let products = [];
@@ -151,6 +158,10 @@ export function initPOS({ request, available }) {
   let paymentRepair = false;
   let paymentTotal = null;
   let paid = false;
+  let printSale = null;
+  let printSeq = 0;
+  let printBusy = false;
+  let reprintBusy = false;
   const dialog = $('payment-dialog');
   const locked = () => checkoutBusy || checkoutUncertain;
   const editableCart = () => available && business && !locked() && !dialog.open;
@@ -188,7 +199,10 @@ export function initPOS({ request, available }) {
       const input = $(`line-${line.serial}-discount-value`);
       if (input) input.disabled = !editableCart() || line.blocked || line.kind === 'none';
     }
-    for (const id of ['business-screen', 'pos-screen', 'history-screen']) $(id).inert = locked();
+    for (const id of ['business-screen', 'pos-screen', 'history-screen', 'device-screen']) $(id).inert = locked();
+    $('receipt-reprint').disabled = !available || locked() || reprintBusy;
+    $('print-retry').disabled = printBusy;
+    $('print-copy').disabled = printBusy;
     $('payment-fields').disabled = locked() || paymentRepair;
     $('payment-cancel').disabled = locked();
     $('checkout-retry').hidden = !checkoutUncertain || checkoutBusy;
@@ -212,11 +226,14 @@ export function initPOS({ request, available }) {
 
   function navigate(next) {
     if (locked() || dialog.open || (available && !business && next !== 'business')) return;
+    if (screen === 'device' && next !== 'device' && !device.canLeave()) return;
     if (next !== screen && !discardEditor()) return;
+    const previous = screen;
     screen = next;
     $('business-screen').hidden = next !== 'business';
     $('pos-screen').hidden = next !== 'cashier' && next !== 'products';
     $('history-screen').hidden = next !== 'history';
+    $('device-screen').hidden = next !== 'device';
     $('cart-panel').hidden = next !== 'cashier';
     $('product-editor-panel').hidden = next !== 'products';
     $('pos-screen').classList.toggle('product-mode', next === 'products');
@@ -230,11 +247,19 @@ export function initPOS({ request, available }) {
     } else if (next === 'history') {
       loadHistory();
       $('history-title').focus();
+    } else if (next === 'device') {
+      // Reloading while already on the screen would silently drop unsaved settings.
+      if (previous !== 'device') device.show();
+      $('device-title').focus();
     }
   }
 
   for (const nav of document.querySelectorAll('[data-nav]')) nav.addEventListener('click', () => navigate(nav.dataset.nav));
   $('open-cashier').addEventListener('click', () => navigate('cashier'));
+  $('device-edit-business').addEventListener('click', () => {
+    navigate('business');
+    if (screen === 'business') ($('saved-view').hidden ? $('business-name') : $('edit')).focus();
+  });
 
   function catalogState(key, error = false) {
     notice('catalog-notice', key, error);
@@ -736,6 +761,7 @@ export function initPOS({ request, available }) {
 
   function openPayment() {
     if ($('pay').disabled || !quote || locked() || dialog.open) return;
+    resetPrint();
     paymentTotal = quote.totals.total;
     paymentRepair = false;
     paid = false;
@@ -774,6 +800,7 @@ export function initPOS({ request, available }) {
   function closePayment() {
     if (locked()) return;
     dialog.close();
+    resetPrint();
     attempt = null;
     paymentRepair = false;
     paymentTotal = null;
@@ -796,6 +823,56 @@ export function initPOS({ request, available }) {
     return sale && ['string', 'number'].includes(typeof sale.id) && ['string', 'number'].includes(typeof sale.number) && typeof sale.business_name === 'string' && Array.isArray(sale.items) && sale.items.length > 0 && validTotals(sale.totals) && Number.isSafeInteger(sale.tendered) && Number.isSafeInteger(sale.change) && sale.tendered === attempt.tendered && sale.totals.total === attempt.expected_total && sale.change === sale.tendered - sale.totals.total;
   }
 
+  function resetPrint() {
+    ++printSeq;
+    printSale = null;
+    printBusy = false;
+    notice('print-notice', null);
+    $('print-retry').hidden = true;
+    $('print-copy').hidden = true;
+  }
+
+  // An uncertain original is never resent: it would also kick the drawer and could print twice unmarked.
+  async function sendReceipt(copy) {
+    if (!available || printSale === null || printBusy) return;
+    const sequence = printSeq;
+    let retry = false;
+    let allowCopy = false;
+    printBusy = true;
+    $('print-retry').hidden = true;
+    $('print-copy').hidden = true;
+    notice('print-notice', copy ? 'reprintBusy' : 'receiptPrinting');
+    synchronize();
+    try {
+      const result = await request(copy ? 'receipt.reprint' : 'receipt.print', { id: printSale });
+      if (result?.submitted !== true) throw new Error('unexpected');
+      if (sequence !== printSeq) return;
+      notice('print-notice', copy ? 'reprintSent' : 'receiptPrinted');
+      allowCopy = true;
+    } catch (error) {
+      if (sequence !== printSeq) return;
+      const code = errorCode(error);
+      if (code === 'invalid_device_config') notice('print-notice', 'receiptNoPrinter', true);
+      else if (definitePrintErrors.has(code)) {
+        noticeDetail('print-notice', copy ? 'reprintFailed' : 'receiptPrintFailed', code);
+        retry = !copy;
+        allowCopy = copy;
+      } else {
+        noticeDetail('print-notice', copy ? 'reprintUnknown' : 'receiptPrintUnknown', code);
+        allowCopy = true;
+      }
+    } finally {
+      if (sequence === printSeq) {
+        printBusy = false;
+        $('print-retry').hidden = !retry;
+        $('print-copy').hidden = !allowCopy;
+        synchronize();
+      }
+    }
+  }
+  $('print-retry').addEventListener('click', () => sendReceipt(false));
+  $('print-copy').addEventListener('click', () => sendReceipt(true));
+
   async function checkout() {
     if (!attempt || checkoutBusy) return;
     const wasUncertain = checkoutUncertain;
@@ -816,6 +893,9 @@ export function initPOS({ request, available }) {
       notice('payment-notice', null);
       attempt = null;
       synchronize();
+      // Print before refreshing the catalog so the receipt request is first in the bridge queue.
+      printSale = result.sale.id;
+      sendReceipt(false);
       loadProducts();
       $('paid-title').focus();
     } catch (error) {
@@ -914,6 +994,8 @@ export function initPOS({ request, available }) {
     $('history-receipt').replaceChildren();
     $('receipt-placeholder').hidden = true;
     $('receipt-retry').hidden = true;
+    $('reprint-bar').hidden = true;
+    notice('reprint-notice', null);
     $('history-detail').setAttribute('aria-busy', 'true');
     notice('receipt-notice', 'loadingReceipt');
     for (const row of $('sale-list').querySelectorAll('[data-sale-id]')) row.setAttribute('aria-pressed', String(row.dataset.saleId === String(id)));
@@ -923,6 +1005,7 @@ export function initPOS({ request, available }) {
       if (!result?.sale || !Array.isArray(result.sale.items) || !validTotals(result.sale.totals)) throw new Error('unexpected');
       renderReceipt($('history-receipt'), result.sale);
       notice('receipt-notice', null);
+      $('reprint-bar').hidden = false;
     } catch (error) {
       if (sequence !== receiptSeq) return;
       notice('receipt-notice', errorCode(error), true);
@@ -939,8 +1022,29 @@ export function initPOS({ request, available }) {
     $('receipt-placeholder').hidden = false;
     notice('receipt-notice', null);
     $('receipt-retry').hidden = true;
+    $('reprint-bar').hidden = true;
     loadHistory();
   }
+  $('receipt-reprint').addEventListener('click', async () => {
+    if (!available || locked() || reprintBusy || selectedSale === null || $('reprint-bar').hidden) return;
+    const sequence = receiptSeq;
+    reprintBusy = true;
+    notice('reprint-notice', 'reprintBusy');
+    synchronize();
+    try {
+      const result = await request('receipt.reprint', { id: selectedSale });
+      if (result?.submitted !== true) throw new Error('unexpected');
+      if (sequence === receiptSeq) notice('reprint-notice', 'reprintSent');
+    } catch (error) {
+      if (sequence !== receiptSeq) return;
+      const code = errorCode(error);
+      if (code === 'invalid_device_config') notice('reprint-notice', 'receiptNoPrinter', true);
+      else noticeDetail('reprint-notice', definitePrintErrors.has(code) ? 'reprintFailed' : 'reprintUnknown', code);
+    } finally {
+      reprintBusy = false;
+      synchronize();
+    }
+  });
   $('history-date').addEventListener('change', resetHistory);
   $('history-all').addEventListener('click', () => { if (!locked()) { $('history-date').value = ''; resetHistory(); } });
   $('history-prev').addEventListener('click', () => { if (!locked() && !historyBusy && historyOffset > 0) { historyOffset -= 20; loadHistory(); } });
@@ -953,6 +1057,7 @@ export function initPOS({ request, available }) {
       event.preventDefault();
       if (locked() || dialog.open || !available || !business) return;
       if (screen !== 'cashier' && screen !== 'products') navigate('cashier');
+      if (screen !== 'cashier' && screen !== 'products') return;
       $('product-search').focus();
       $('product-search').select();
     } else if (event.key === 'F8') {

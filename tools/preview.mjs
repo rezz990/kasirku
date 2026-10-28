@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = new URL('../ui/', import.meta.url);
 const types = new Map([['.html', 'text/html; charset=utf-8'], ['.js', 'text/javascript; charset=utf-8'], ['.css', 'text/css; charset=utf-8'], ['.svg', 'image/svg+xml']]);
-const files = new Set(['index.html', 'app.js', 'pos.js', 'strings.js', 'styles.css', 'assets/kasirku.svg']);
+const files = new Set(['index.html', 'app.js', 'pos.js', 'device.js', 'strings.js', 'styles.css', 'assets/kasirku.svg']);
 const server = http.createServer(async (request, response) => {
   const pathname = new URL(request.url, 'http://127.0.0.1').pathname;
   const name = pathname === '/' ? 'index.html' : pathname.slice(1);

@@ -105,13 +105,47 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
     }
     if (std.mem.eql(u8, request.command, "device.get")) {
         try fields(p, 0);
-        return success(allocator, request.id, .{ .config = try device.loadConfig(db, a) });
+        const config = try device.loadConfig(db, a);
+        const logo = if (try device.loadLogo(db, a)) |value| LogoJson{
+            .width = value.width_px,
+            .height = value.height_px,
+            .bits_base64 = try encodeBase64(a, value.bits),
+        } else null;
+        return success(allocator, request.id, .{ .config = config, .logo = logo });
     }
     if (std.mem.eql(u8, request.command, "device.save")) {
         const config = try configPayload(p);
+        // Reject settings that would make every future receipt unprintable.
+        _ = try device.previewDraft(db, a, config);
         const response = try success(allocator, request.id, .{ .saved = true });
         errdefer allocator.free(response);
         try device.saveConfig(db, config);
+        return response;
+    }
+    if (std.mem.eql(u8, request.command, "device.preview")) {
+        const preview = try device.previewDraft(db, a, try configPayload(p));
+        return success(allocator, request.id, .{ .text = preview.text, .width = preview.width });
+    }
+    if (std.mem.eql(u8, request.command, "device.logo_save")) {
+        try fields(p, 3);
+        const width = try positiveInteger(p, "width");
+        const height = try positiveInteger(p, "height");
+        if (width > device.max_logo_width or height > device.max_logo_height) return error.InvalidLogo;
+        const encoded = try string(p, "bits_base64");
+        const decoder = std.base64.standard.Decoder;
+        const size = decoder.calcSizeForSlice(encoded) catch return error.InvalidLogo;
+        const bits = try a.alloc(u8, size);
+        decoder.decode(bits, encoded) catch return error.InvalidLogo;
+        const response = try success(allocator, request.id, .{ .saved = true });
+        errdefer allocator.free(response);
+        try device.saveLogo(db, a, .{ .width_px = @intCast(width), .height_px = @intCast(height), .bits = bits });
+        return response;
+    }
+    if (std.mem.eql(u8, request.command, "device.logo_clear")) {
+        try fields(p, 0);
+        const response = try success(allocator, request.id, .{ .saved = true });
+        errdefer allocator.free(response);
+        try device.saveLogo(db, a, null);
         return response;
     }
     if (std.mem.eql(u8, request.command, "device.printers")) {
@@ -121,9 +155,7 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
     if (std.mem.eql(u8, request.command, "receipt.preview")) {
         try fields(p, 1);
         const preview = try device.previewSale(db, a, try positiveInteger(p, "id"));
-        const encoder = std.base64.standard.Encoder;
-        const bytes = try a.alloc(u8, encoder.calcSize(preview.bytes.len));
-        return success(allocator, request.id, .{ .text = preview.text, .escpos_base64 = encoder.encode(bytes, preview.bytes), .width = preview.width });
+        return success(allocator, request.id, .{ .text = preview.text, .escpos_base64 = try encodeBase64(a, preview.bytes), .width = preview.width });
     }
     if (std.mem.eql(u8, request.command, "receipt.print") or std.mem.eql(u8, request.command, "receipt.reprint")) {
         try fields(p, 1);
@@ -150,6 +182,14 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
         return response;
     }
     return failure(allocator, request.id, "unknown_command");
+}
+
+const LogoJson = struct { width: u16, height: u16, bits_base64: []const u8 };
+
+fn encodeBase64(a: std.mem.Allocator, bytes: []const u8) ![]const u8 {
+    const encoder = std.base64.standard.Encoder;
+    const out = try a.alloc(u8, encoder.calcSize(bytes.len));
+    return encoder.encode(out, bytes);
 }
 
 fn configPayload(p: std.json.Value) !device.Config {
@@ -256,6 +296,7 @@ fn errorCode(err: anyerror) []const u8 {
         error.CheckoutUnknown => "checkout_unknown",
         error.SaleNotFound => "sale_not_found",
         error.InvalidConfig => "invalid_device_config",
+        error.InvalidLogo => "invalid_logo",
         error.InvalidWidth, error.TooWide, error.InvalidBitmap, error.InvalidCode, error.InvalidReceiptText => "invalid_receipt",
         error.PrinterUnreachable => "printer_unreachable",
         error.PrinterNotFound => "printer_not_found",
@@ -579,6 +620,49 @@ test "device bridge round trips config and rejects wrong types and unknown field
     try testFailure(try testCommand(a, db, "receipt.reprint", .{ .id = 1, .sql = "DELETE FROM sale" }), "invalid_payload");
     try testFailure(try testCommand(a, db, "receipt.preview", .{ .id = "1" }), "invalid_payload");
     try testFailure(try testCommand(a, db, "receipt.preview", .{ .id = 999 }), "sale_not_found");
+}
+
+test "device bridge previews drafts and stores logos without trusting the payload" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    try db.saveBusiness(.{ .name = "Toko Logo", .mode = "retail", .address = "" });
+
+    var draft = device.defaultConfig();
+    draft.header = "Diskon akhir pekan";
+    const preview = try testResult(try testCommand(a, db, "device.preview", draft));
+    try std.testing.expect(std.mem.indexOf(u8, preview.object.get("text").?.string, "Diskon akhir pekan") != null);
+    try std.testing.expectEqual(@as(i64, 80), preview.object.get("width").?.integer);
+    try std.testing.expectEqual(@as(i64, 0), try db.integer("SELECT count(*) FROM device_config;"));
+    draft.qr_payload = "x" ** 512;
+    draft.show_qr = true;
+    _ = try testResult(try testCommand(a, db, "device.preview", draft));
+    draft.copies = 0;
+    try testFailure(try testCommand(a, db, "device.preview", draft), "invalid_device_config");
+
+    try std.testing.expect((try testResult(try testCommand(a, db, "device.get", @as(struct {}, .{})))).object.get("logo").? == .null);
+    _ = try testResult(try testCommand(a, db, "device.logo_save", .{ .width = 12, .height = 2, .bits_base64 = "8A+qVQ==" }));
+    const loaded = try testResult(try testCommand(a, db, "device.get", @as(struct {}, .{})));
+    const logo = loaded.object.get("logo").?.object;
+    try std.testing.expectEqual(@as(i64, 12), logo.get("width").?.integer);
+    try std.testing.expectEqual(@as(i64, 2), logo.get("height").?.integer);
+    try std.testing.expectEqualStrings("8A+qVQ==", logo.get("bits_base64").?.string);
+    try std.testing.expect(std.mem.indexOf(u8, (try testResult(try testCommand(a, db, "device.preview", device.defaultConfig()))).object.get("text").?.string, "[logo]") != null);
+
+    try testFailure(try testCommand(a, db, "device.logo_save", .{ .width = 12, .height = 2, .bits_base64 = "8A+q" }), "invalid_logo");
+    try testFailure(try testCommand(a, db, "device.logo_save", .{ .width = 12, .height = 2, .bits_base64 = "not base64!" }), "invalid_logo");
+    try testFailure(try testCommand(a, db, "device.logo_save", .{ .width = 385, .height = 2, .bits_base64 = "" }), "invalid_logo");
+    try testFailure(try testCommand(a, db, "device.logo_save", .{ .width = 8, .height = 193, .bits_base64 = "" }), "invalid_logo");
+    try testFailure(try testCommand(a, db, "device.logo_save", .{ .width = 0, .height = 2, .bits_base64 = "" }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "device.logo_save", .{ .width = 12, .height = 2 }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "device.logo_clear", .{ .extra = true }), "invalid_payload");
+    try std.testing.expectEqualStrings("8A+qVQ==", (try testResult(try testCommand(a, db, "device.get", @as(struct {}, .{})))).object.get("logo").?.object.get("bits_base64").?.string);
+
+    _ = try testResult(try testCommand(a, db, "device.logo_clear", @as(struct {}, .{})));
+    try std.testing.expect((try testResult(try testCommand(a, db, "device.get", @as(struct {}, .{})))).object.get("logo").? == .null);
 }
 
 fn deviceBridgeSale(db: Database, a: std.mem.Allocator) !i64 {

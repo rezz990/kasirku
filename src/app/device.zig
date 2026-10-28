@@ -129,18 +129,62 @@ pub fn saveConfig(db: Database, config: Config) !void {
     try db.exec("COMMIT;");
 }
 
+// Fits both 58mm (384 dots) and 80mm paper so changing width never invalidates the logo.
+pub const max_logo_width = 384;
+pub const max_logo_height = 192;
+const logo_header_len = 4;
+
+pub fn validateLogo(logo: receipt.Logo) !void {
+    if (logo.width_px == 0 or logo.width_px > max_logo_width) return error.InvalidLogo;
+    if (logo.height_px == 0 or logo.height_px > max_logo_height) return error.InvalidLogo;
+    const row_bytes = (@as(usize, logo.width_px) + 7) / 8;
+    if (logo.bits.len != row_bytes * logo.height_px) return error.InvalidLogo;
+}
+
+// Stored as little-endian u16 width, u16 height, then packed raster rows.
+pub fn loadLogo(db: Database, a: Allocator) !?receipt.Logo {
+    const s = try db.prepare("SELECT logo FROM device_config WHERE id=1;");
+    defer s.close();
+    if (!try s.next()) return null;
+    const blob = s.columnBlob(0);
+    if (blob.len == 0) return null;
+    if (blob.len < logo_header_len) return error.InvalidLogo;
+    const logo = receipt.Logo{
+        .width_px = std.mem.readInt(u16, blob[0..2], .little),
+        .height_px = std.mem.readInt(u16, blob[2..4], .little),
+        .bits = try a.dupe(u8, blob[logo_header_len..]),
+    };
+    try validateLogo(logo);
+    return logo;
+}
+
+pub fn saveLogo(db: Database, a: Allocator, logo: ?receipt.Logo) !void {
+    var blob: []u8 = &.{};
+    if (logo) |value| {
+        try validateLogo(value);
+        blob = try a.alloc(u8, logo_header_len + value.bits.len);
+        std.mem.writeInt(u16, blob[0..2], value.width_px, .little);
+        std.mem.writeInt(u16, blob[2..4], value.height_px, .little);
+        @memcpy(blob[logo_header_len..], value.bits);
+    }
+    const s = try db.prepare("INSERT INTO device_config(id,logo) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET logo=excluded.logo,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now');");
+    defer s.close();
+    try s.bindBlob(1, blob);
+    if (try s.next()) return error.UnexpectedResult;
+}
+
 pub fn listPrinters(a: Allocator) ![]printer.Printer {
     return printer.listPrinters(a);
 }
 
-fn templateFrom(config: Config, business_name: []const u8, business_address: []const u8) !receipt.Template {
+fn templateFrom(config: Config, logo: ?receipt.Logo, business_name: []const u8, business_address: []const u8) !receipt.Template {
     const width: receipt.Width = switch (config.paper_width) {
         58 => .mm58,
         80 => .mm80,
         else => return error.InvalidConfig,
     };
     return .{
-        .logo = null,
+        .logo = logo,
         .business_name = business_name,
         .business_address = business_address,
         .header = config.header,
@@ -187,7 +231,7 @@ fn send(config: Config, bytes: []const u8) !void {
 pub fn previewSale(db: Database, a: Allocator, sale_id: i64) !Preview {
     const config = try loadConfig(db, a);
     const sale = try pos.saleDetail(db, a, sale_id);
-    const template = try templateFrom(config, sale.business_name, sale.business_address);
+    const template = try templateFrom(config, try loadLogo(db, a), sale.business_name, sale.business_address);
     const built = try receipt.build(a, sale, template, false);
     return .{
         .text = try receipt.renderText(a, built, template),
@@ -196,10 +240,31 @@ pub fn previewSale(db: Database, a: Allocator, sale_id: i64) !Preview {
     };
 }
 
+// Renders unsaved designer settings against the test sale so the cashier sees changes before saving.
+pub fn previewDraft(db: Database, a: Allocator, config: Config) !Preview {
+    try validateConfig(config);
+    const template = try testTemplate(db, a, config);
+    const built = try receipt.build(a, testSale(), template, false);
+    return .{
+        .text = try receipt.renderText(a, built, template),
+        .bytes = try receipt.renderEscPos(a, built, template),
+        .width = config.paper_width,
+    };
+}
+
+fn testTemplate(db: Database, a: Allocator, config: Config) !receipt.Template {
+    const business = try db.business(a);
+    const name = if (business) |b| b.name else "KasirKu";
+    const address = if (business) |b| b.address else "";
+    var template = try templateFrom(config, try loadLogo(db, a), name, address);
+    template.cash_drawer = false;
+    return template;
+}
+
 pub fn printSale(db: Database, a: Allocator, sale_id: i64, is_copy: bool) !void {
     const config = try loadConfig(db, a);
     const sale = try pos.saleDetail(db, a, sale_id);
-    var template = try templateFrom(config, sale.business_name, sale.business_address);
+    var template = try templateFrom(config, try loadLogo(db, a), sale.business_name, sale.business_address);
     if (is_copy) template.cash_drawer = false;
     const built = try receipt.build(a, sale, template, is_copy);
     const bytes = try receipt.renderEscPos(a, built, template);
@@ -212,11 +277,7 @@ pub fn printSale(db: Database, a: Allocator, sale_id: i64, is_copy: bool) !void 
 
 pub fn testPrint(db: Database, a: Allocator) !void {
     const config = try loadConfig(db, a);
-    const business = try db.business(a);
-    const name = if (business) |b| b.name else "KasirKu";
-    const address = if (business) |b| b.address else "";
-    var template = try templateFrom(config, name, address);
-    template.cash_drawer = false;
+    const template = try testTemplate(db, a, config);
     const built = try receipt.build(a, testSale(), template, false);
     const bytes = try receipt.renderEscPos(a, built, template);
     try send(config, bytes);
@@ -302,7 +363,7 @@ fn testSale() TestSale {
         .items = &[_]TestItem{.{
             .name = "Barang uji",
             .sku = "UJI",
-            .barcode = "",
+            .barcode = "UJI001",
             .unit = "pcs",
             .unit_price = 10_000,
             .quantity_milli = 1_000,
@@ -535,4 +596,78 @@ test "restored configuration cannot inject commands or lose multiline text" {
     try std.testing.expectEqualStrings(config.header, restored.header);
     try db.exec("UPDATE device_config SET footer='evil'||char(27)||'@';");
     try std.testing.expectError(error.InvalidConfig, loadConfig(db, a));
+}
+
+test "logo survives config saves, prints as raster, and rejects malformed bitmaps" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const directory = try temp.dir.realpathAlloc(a, ".");
+    const out = try std.fmt.allocPrint(a, "{s}/logo.bin", .{directory});
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+
+    try std.testing.expectEqual(@as(?receipt.Logo, null), try loadLogo(db, a));
+    const bits = [_]u8{ 0xF0, 0x0F, 0xAA, 0x55 };
+    try saveLogo(db, a, .{ .width_px = 12, .height_px = 2, .bits = &bits });
+    try saveConfig(db, fileConfig(out));
+    const stored = (try loadLogo(db, a)).?;
+    try std.testing.expectEqual(@as(u16, 12), stored.width_px);
+    try std.testing.expectEqual(@as(u16, 2), stored.height_px);
+    try std.testing.expectEqualSlices(u8, &bits, stored.bits);
+
+    try testPrint(db, a);
+    const printed = try std.fs.cwd().readFileAlloc(a, out, 1 << 16);
+    try std.testing.expect(std.mem.indexOf(u8, printed, &[_]u8{ 0x1D, 'v', '0', 0, 2, 0, 2, 0, 0xF0, 0x0F, 0xAA, 0x55 }) != null);
+    try std.testing.expect(std.mem.indexOf(u8, (try previewDraft(db, a, fileConfig(out))).text, "[logo]") != null);
+
+    try std.testing.expectError(error.InvalidLogo, saveLogo(db, a, .{ .width_px = max_logo_width + 1, .height_px = 1, .bits = &([_]u8{0} ** 49) }));
+    try std.testing.expectError(error.InvalidLogo, saveLogo(db, a, .{ .width_px = 8, .height_px = max_logo_height + 1, .bits = &([_]u8{0} ** (max_logo_height + 1)) }));
+    try std.testing.expectError(error.InvalidLogo, saveLogo(db, a, .{ .width_px = 12, .height_px = 2, .bits = bits[0..3] }));
+    try std.testing.expectError(error.InvalidLogo, saveLogo(db, a, .{ .width_px = 0, .height_px = 2, .bits = &.{} }));
+    try std.testing.expectEqualSlices(u8, &bits, (try loadLogo(db, a)).?.bits);
+
+    try db.exec("UPDATE device_config SET logo=x'0C000200F0';");
+    try std.testing.expectError(error.InvalidLogo, loadLogo(db, a));
+    try db.exec("UPDATE device_config SET logo=x'0C';");
+    try std.testing.expectError(error.InvalidLogo, loadLogo(db, a));
+
+    try saveLogo(db, a, null);
+    try std.testing.expectEqual(@as(?receipt.Logo, null), try loadLogo(db, a));
+    try std.testing.expectEqual(@as(i64, 0), try db.integer("SELECT length(logo) FROM device_config WHERE id=1;"));
+    try std.testing.expectEqualStrings("file", (try loadConfig(db, a)).printer_kind);
+}
+
+test "draft preview reflects unsaved settings without touching storage" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    try db.saveBusiness(.{ .name = "Toko Draf", .mode = "retail", .address = "Jalan Draf" });
+
+    var draft = defaultConfig();
+    draft.paper_width = 58;
+    draft.header = "Promo hari ini";
+    draft.footer = "Sampai jumpa";
+    draft.show_sku = true;
+    draft.show_barcode = true;
+    draft.show_qr = true;
+    draft.qr_payload = "https://kasirku.local";
+    const preview = try previewDraft(db, a, draft);
+    for ([_][]const u8{ "Toko Draf", "Promo hari ini", "Sampai jumpa", "SKU: UJI", "UJI001", "kasirku.local" }) |expected| {
+        try std.testing.expect(std.mem.indexOf(u8, preview.text, expected) != null);
+    }
+    var rows = std.mem.splitScalar(u8, preview.text, '\n');
+    while (rows.next()) |row| try std.testing.expect(row.len <= 32);
+    try std.testing.expectEqual(@as(i64, 58), preview.width);
+    try std.testing.expect(std.mem.indexOf(u8, preview.bytes, &.{ 0x1B, 'p', 0, 25, 250 }) == null);
+    try std.testing.expectEqual(@as(i64, 0), try db.integer("SELECT count(*) FROM device_config;"));
+
+    draft.copies = 9;
+    try std.testing.expectError(error.InvalidConfig, previewDraft(db, a, draft));
 }

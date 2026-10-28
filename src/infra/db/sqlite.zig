@@ -187,6 +187,14 @@ pub const Statement = struct {
         try check(c.sqlite3_bind_int64(self.handle, index, value));
     }
 
+    pub fn bindBlob(self: Statement, index: c_int, value: []const u8) !void {
+        if (value.len > std.math.maxInt(c_int)) return error.ValueTooLarge;
+        const transient: c.sqlite3_destructor_type = @ptrFromInt(std.math.maxInt(usize));
+        // A zero-length blob still needs a non-null pointer or SQLite binds NULL.
+        const pointer: *const anyopaque = if (value.len == 0) "" else value.ptr;
+        try check(c.sqlite3_bind_blob(self.handle, index, pointer, @intCast(value.len), transient));
+    }
+
     pub fn bindNull(self: Statement, index: c_int) !void {
         try check(c.sqlite3_bind_null(self.handle, index));
     }
@@ -211,6 +219,12 @@ pub const Statement = struct {
         const pointer = c.sqlite3_column_text(self.handle, index);
         const length: usize = @intCast(c.sqlite3_column_bytes(self.handle, index));
         return if (pointer == null) "" else pointer[0..length];
+    }
+
+    pub fn columnBlob(self: Statement, index: c_int) []const u8 {
+        const pointer: ?[*]const u8 = @ptrCast(c.sqlite3_column_blob(self.handle, index));
+        const length: usize = @intCast(c.sqlite3_column_bytes(self.handle, index));
+        return if (pointer) |p| p[0..length] else "";
     }
 };
 
