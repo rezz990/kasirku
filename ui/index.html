@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <title>KasirKu</title>
+  <link rel="icon" href="assets/kasirku.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><img src="assets/kasirku.svg" alt="" width="40" height="40"><span><span data-i18n="appName"></span><span class="brand-period" data-i18n="brandPeriod"></span></span></div>
+    <nav class="main-nav" data-i18n-aria="navigation">
+      <button type="button" data-nav="cashier" data-i18n="cashier" disabled></button>
+      <button type="button" data-nav="products" data-i18n="products" disabled></button>
+      <button type="button" data-nav="history" data-i18n="history" disabled></button>
+      <button type="button" data-nav="business" data-i18n="business" aria-current="page"></button>
+    </nav>
+    <div class="header-context"><span id="header-business"></span><span class="connection" id="connection" role="status" data-i18n="connecting"></span></div>
+  </header>
+  <main class="workspace" id="business-screen">
+    <section class="introduction" aria-labelledby="intro-title">
+      <h1 id="intro-title" data-i18n="introTitle"></h1>
+      <p class="intro-copy" data-i18n="introCopy"></p>
+      <ul class="benefits">
+        <li><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M7 4h10a2 2 0 0 1 2 2v14H5V6a2 2 0 0 1 2-2ZM9 8h6m-6 4h6m-6 4h3"/></svg><div><strong data-i18n="localTitle"></strong><span data-i18n="localCopy"></span></div></li>
+        <li><svg aria-hidden="true" viewBox="0 0 24 24"><path d="m12 3 8 3v6c0 4-4 7-8 9-4-2-8-5-8-9V6l8-3Zm-4 9 3 3 5-6"/></svg><div><strong data-i18n="controlTitle"></strong><span data-i18n="controlCopy"></span></div></li>
+      </ul>
+      <aside class="release-note"><strong data-i18n="previewTitle"></strong><p data-i18n="previewCopy"></p></aside>
+    </section>
+    <section class="setup" aria-labelledby="setup-title" aria-busy="true" id="setup">
+      <div class="section-heading"><h2 id="setup-title" data-i18n="setupTitle"></h2><p id="setup-description" data-i18n="setupCopy"></p></div>
+      <p class="notice" id="notice" role="status" hidden></p>
+      <form id="business-form">
+        <fieldset id="form-fields" disabled>
+          <div class="field"><label for="business-name" data-i18n="nameLabel"></label><input id="business-name" name="name" autocomplete="organization" maxlength="120" required data-i18n-placeholder="namePlaceholder"><span class="field-hint" data-i18n="nameHint"></span></div>
+          <fieldset class="mode-field"><legend data-i18n="modeLabel"></legend><div class="mode-options">
+            <label class="mode-option"><input type="radio" name="mode" value="retail" checked><span><strong data-i18n="retailLabel"></strong><small data-i18n="retailCopy"></small></span></label>
+            <label class="mode-option"><input type="radio" name="mode" value="food"><span><strong data-i18n="foodLabel"></strong><small data-i18n="foodCopy"></small></span></label>
+            <label class="mode-option"><input type="radio" name="mode" value="service"><span><strong data-i18n="serviceLabel"></strong><small data-i18n="serviceCopy"></small></span></label>
+          </div></fieldset>
+          <div class="field"><label for="business-address"><span data-i18n="addressLabel"></span><span class="optional" data-i18n="optional"></span></label><textarea id="business-address" name="address" rows="2" maxlength="512" autocomplete="street-address" data-i18n-placeholder="addressPlaceholder"></textarea></div>
+          <button class="primary-button" id="save" type="submit"><span data-i18n="saveButton"></span><svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
+          <p class="form-footnote" data-i18n="saveHint"></p>
+        </fieldset>
+      </form>
+      <section class="saved-view" id="saved-view" hidden aria-labelledby="saved-title">
+        <svg class="success-icon" aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20"/><path d="m15 24 6 6 12-13"/></svg>
+        <h3 id="saved-title" data-i18n="savedTitle"></h3>
+        <p data-i18n="savedCopy"></p>
+        <dl class="business-summary"><div><dt data-i18n="nameLabel"></dt><dd id="saved-name"></dd></div><div><dt data-i18n="modeLabel"></dt><dd id="saved-mode"></dd></div><div><dt data-i18n="addressLabel"></dt><dd id="saved-address"></dd></div></dl>
+        <div class="button-row"><button type="button" class="secondary-button" id="edit" data-i18n="editButton"></button><button type="button" class="primary-button" id="open-cashier" data-i18n="goCashier"></button></div>
+      </section>
+      <div class="diagnostics"><button id="check" class="text-button" type="button" data-i18n="checkButton" disabled></button><span id="diagnostic-result" role="status"></span></div>
+    </section>
+  </main>
+  <main id="pos-screen" class="pos-workspace" hidden>
+    <section id="catalog-panel" class="catalog-panel" aria-labelledby="catalog-title">
+      <div class="panel-heading"><div><h1 id="catalog-title" data-i18n="catalogTitle" tabindex="-1"></h1><p id="catalog-copy" data-i18n="catalogCopy"></p></div><button type="button" id="add-product" class="secondary-button compact" data-i18n="addProduct"></button></div>
+      <form id="search-form" role="search" class="search-form"><label class="sr-only" for="product-search" data-i18n="searchLabel"></label><svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><input type="search" id="product-search" autocomplete="off" maxlength="120" data-i18n-placeholder="searchPlaceholder"><kbd data-i18n="searchShortcut"></kbd></form>
+      <div id="catalog-notice" class="notice" role="status" hidden></div>
+      <div id="catalog-content" class="catalog-content" aria-busy="false"><div id="product-list" class="product-list"></div><div id="catalog-empty" class="empty-state" hidden><h2 id="catalog-empty-title"></h2><p id="catalog-empty-copy"></p><button type="button" id="catalog-empty-action" class="secondary-button compact"></button></div></div>
+      <div class="pagination"><span id="catalog-count"></span><nav data-i18n-aria="catalogPaging"><button type="button" id="catalog-prev" class="plain-button" data-i18n="previous" disabled></button><span id="catalog-page"></span><button type="button" id="catalog-next" class="plain-button" data-i18n="next" disabled></button></nav></div>
+    </section>
+    <section id="cart-panel" class="cart-panel" aria-labelledby="cart-title">
+      <div class="cart-heading"><div><h2 id="cart-title" data-i18n="cartTitle"></h2><span id="cart-count" class="muted"></span></div><button type="button" id="cart-clear" class="text-button" data-i18n="cartClear" disabled></button></div>
+      <div class="cart-scroll"><div id="cart-empty" class="empty-state"><svg aria-hidden="true" viewBox="0 0 48 48"><path d="M12 5h24v38l-6-4-6 4-6-4-6 4V5Zm7 10h10m-10 7h10m-10 7h6"/></svg><h3 data-i18n="cartEmpty"></h3><p data-i18n="cartEmptyCopy"></p></div><div id="cart-lines"></div>
+        <details id="transaction-options" class="transaction-options"><summary data-i18n="transactionOptions"></summary><fieldset id="transaction-fields"><div class="discount-fields"><div class="field"><label for="transaction-discount-kind" data-i18n="transactionDiscount"></label><select id="transaction-discount-kind"><option value="none" data-i18n="discountNone"></option><option value="nominal" data-i18n="discountNominal"></option><option value="percent" data-i18n="discountPercent"></option></select></div><div class="field"><label for="transaction-discount-value" data-i18n="discountValue"></label><input id="transaction-discount-value" type="text" inputmode="decimal" value="0" disabled></div></div><div class="field"><label for="cash-rounding" data-i18n="rounding"></label><select id="cash-rounding"><option value="1" data-i18n="rounding1"></option><option value="50" data-i18n="rounding50"></option><option value="100" data-i18n="rounding100"></option></select></div></fieldset></details>
+      </div>
+      <div class="cart-bottom"><p id="quote-notice" class="quote-notice" role="status" data-i18n="quoteRequired"></p><button type="button" id="quote-retry" class="text-button" data-i18n="quoteRetry" hidden></button><dl id="cart-totals" class="totals"></dl><button type="button" id="pay" class="primary-button" disabled><span data-i18n="pay"></span><kbd data-i18n="payShortcut"></kbd></button></div>
+    </section>
+    <aside id="product-editor-panel" class="product-editor-panel" hidden aria-labelledby="product-editor-title">
+      <div id="product-editor-empty" class="empty-state"><h2 data-i18n="productEditorEmpty"></h2><p data-i18n="productEditorCopy"></p></div>
+      <form id="product-form" hidden><div class="panel-heading"><h2 id="product-editor-title" data-i18n="addProduct"></h2><button type="button" id="product-close" class="plain-button" data-i18n="close"></button></div><p id="product-notice" class="notice" role="status" hidden></p><fieldset id="product-fields">
+        <div class="field"><label for="product-name" data-i18n="productName"></label><input id="product-name" name="name" required maxlength="120" data-i18n-placeholder="productNamePlaceholder"></div>
+        <div class="field-pair"><div class="field"><label for="product-sku" data-i18n="sku"></label><input id="product-sku" name="sku" maxlength="64"></div><div class="field"><label for="product-barcode" data-i18n="barcode"></label><input id="product-barcode" name="barcode" maxlength="64"></div></div>
+        <div class="field-pair"><div class="field"><label for="product-category" data-i18n="category"></label><input id="product-category" name="category" maxlength="64"></div><div class="field"><label for="product-unit" data-i18n="unit"></label><input id="product-unit" name="unit" required maxlength="16" data-i18n-placeholder="unitPlaceholder"></div></div>
+        <div class="field-pair"><div class="field"><label for="product-price" data-i18n="price"></label><input id="product-price" name="price" type="text" inputmode="numeric" required></div><div class="field"><label for="product-cost" data-i18n="cost"></label><input id="product-cost" name="cost" type="text" inputmode="numeric" required value="0"></div></div><p class="field-hint" data-i18n="moneyHint"></p>
+        <label class="check-label"><input id="product-track-stock" type="checkbox"><span data-i18n="stockTracked"></span></label><div class="field"><label for="product-stock" data-i18n="stockQuantity"></label><input id="product-stock" name="stock" type="text" inputmode="decimal" value="0" disabled><p class="field-hint" data-i18n="stockHint"></p></div><p class="field-hint" data-i18n="productLimits"></p>
+        <div class="button-row editor-actions"><button type="button" id="product-cancel" class="secondary-button" data-i18n="cancel"></button><button type="submit" id="product-save" class="primary-button" data-i18n="saveProduct"></button></div><button type="button" id="product-archive" class="text-button danger" data-i18n="archive" hidden></button>
+      </fieldset></form>
+    </aside>
+  </main>
+  <main id="history-screen" class="history-workspace" hidden>
+    <section class="history-panel" aria-labelledby="history-title"><div class="panel-heading"><div><h1 id="history-title" data-i18n="historyTitle" tabindex="-1"></h1><p data-i18n="historyCopy"></p></div></div><div class="history-filter"><div class="field"><label for="history-date" data-i18n="historyDate"></label><input id="history-date" type="date"></div><button type="button" id="history-all" class="secondary-button compact" data-i18n="allDates"></button></div><p id="history-notice" class="notice" role="status" hidden></p><div id="history-content" class="history-content"><div id="sale-list"></div><div id="history-empty" class="empty-state" hidden><h2 id="history-empty-title" data-i18n="noSales"></h2><p data-i18n="noSalesCopy"></p></div><button type="button" id="history-retry" class="secondary-button compact" data-i18n="retry" hidden></button></div><div class="pagination"><nav data-i18n-aria="historyPaging"><button type="button" id="history-prev" class="plain-button" data-i18n="previous" disabled></button><span id="history-page"></span><button type="button" id="history-next" class="plain-button" data-i18n="next" disabled></button></nav></div></section>
+    <section id="history-detail" class="history-detail" data-i18n-aria="receipt"><div id="receipt-placeholder" class="empty-state"><h2 data-i18n="receiptEmpty"></h2><p data-i18n="receiptEmptyCopy"></p></div><p id="receipt-notice" class="notice" role="status" hidden></p><button type="button" id="receipt-retry" class="secondary-button compact" data-i18n="retry" hidden></button><div id="history-receipt"></div></section>
+  </main>
+  <dialog id="payment-dialog" aria-labelledby="payment-title" aria-describedby="payment-copy">
+    <div id="payment-entry"><h2 id="payment-title" data-i18n="paymentTitle"></h2><p id="payment-copy" class="muted" data-i18n="paymentCopy"></p><div class="payment-total"><span data-i18n="payable"></span><strong id="payment-total" class="money"></strong></div><p id="payment-notice" class="notice" role="status" hidden></p>
+      <form id="payment-form"><fieldset id="payment-fields"><div class="field"><label for="tendered" data-i18n="tendered"></label><input id="tendered" type="text" inputmode="numeric" autocomplete="off" required aria-describedby="tendered-hint"><span id="tendered-hint" class="field-hint" data-i18n="moneyHint"></span></div><div class="quick-money"><button type="button" data-tender="exact" class="secondary-button" data-i18n="exactMoney"></button><button type="button" data-tender="50000" class="secondary-button" data-i18n="quick50000"></button><button type="button" data-tender="100000" class="secondary-button" data-i18n="quick100000"></button></div></fieldset><div class="change-row" aria-live="polite"><span id="change-label" data-i18n="change"></span><strong id="payment-change" class="money"></strong></div><button type="submit" id="payment-submit" class="primary-button" data-i18n="paymentSubmit" disabled></button></form>
+      <button type="button" id="checkout-retry" class="primary-button" data-i18n="retryCheckout" hidden></button><button type="button" id="payment-cancel" class="secondary-button" data-i18n="backToCart"></button>
+    </div>
+    <div id="payment-success" hidden><div class="payment-success-heading"><svg aria-hidden="true" viewBox="0 0 48 48"><circle cx="24" cy="24" r="20"/><path d="m15 24 6 6 12-13"/></svg><div><h2 data-i18n="paidTitle" tabindex="-1" id="paid-title"></h2><p class="muted" data-i18n="paidCopy"></p></div></div><div id="payment-receipt"></div><button type="button" id="new-sale" class="primary-button" data-i18n="newSale"></button></div>
+  </dialog>
+  <footer class="app-footer"><span data-i18n="footer"></span><span data-i18n="stageNote"></span></footer>
+</body>
+</html>
