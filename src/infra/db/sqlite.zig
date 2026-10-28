@@ -1,5 +1,5 @@
 const std = @import("std");
-pub const schema_version = 2;
+pub const schema_version = 3;
 pub const c = @cImport({
     @cInclude("sqlite3.h");
 });
@@ -67,13 +67,13 @@ pub const Database = struct {
         if (version > schema_version or version < 0) return error.UnsupportedSchemaVersion;
         if (version > 0) try self.validateHistory(version);
         if (version == schema_version) return;
-        if (version == 1) {
+        if (version > 0 and version < schema_version) {
             // The connection's actual filename, not a caller-supplied alias, owns the recovery copy.
             const filename = c.sqlite3_db_filename(self.handle, "main");
             if (filename != null and filename[0] != 0) {
                 while (true) {
                     const suffix = std.crypto.random.int(u128);
-                    const backup_path = try std.fmt.allocPrintSentinel(allocator, "{s}.pre-migration-v1.{x}.bak", .{ std.mem.span(filename), suffix }, 0);
+                    const backup_path = try std.fmt.allocPrintSentinel(allocator, "{s}.pre-migration-v{d}.{x}.bak", .{ std.mem.span(filename), version, suffix }, 0);
                     defer allocator.free(backup_path);
                     self.backup(backup_path) catch |err| switch (err) {
                         error.PathAlreadyExists => continue,
@@ -103,7 +103,8 @@ pub const Database = struct {
             }
             try self.exec(@embedFile("migrations/0001_foundation.sql"));
         }
-        if (locked_version < schema_version) try self.exec(@embedFile("migrations/0002_pos.sql"));
+        if (locked_version < 2) try self.exec(@embedFile("migrations/0002_pos.sql"));
+        if (locked_version < 3) try self.exec(@embedFile("migrations/0003_devices.sql"));
         try self.exec("COMMIT;");
     }
 
@@ -330,7 +331,7 @@ test "v1 upgrade backs up the actual file and preserves the business" {
     try db.exec(@embedFile("migrations/0001_foundation.sql"));
     try db.saveBusiness(.{ .name = "Before upgrade", .mode = "retail", .address = "Preserved address" });
     try db.migrate(a, ":memory:");
-    try std.testing.expectEqual(@as(i64, 2), try db.integer("PRAGMA user_version;"));
+    try std.testing.expectEqual(@as(i64, 3), try db.integer("PRAGMA user_version;"));
     try db.saveBusiness(.{ .name = "After upgrade", .mode = "food", .address = "New address" });
     try db.migrate(a, path);
     var count: usize = 0;
@@ -351,6 +352,58 @@ test "v1 upgrade backs up the actual file and preserves the business" {
         try std.testing.expectEqualStrings("Preserved address", address);
     }
     try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "v2 upgrade preserves data, backs up, and adds device tables" {
+    const a = std.testing.allocator;
+    var temp = std.testing.tmpDir(.{ .iterate = true });
+    defer temp.cleanup();
+    const directory = try temp.dir.realpathAlloc(a, ".");
+    defer a.free(directory);
+    const path = try std.fmt.allocPrintSentinel(a, "{s}/v2.db", .{directory}, 0);
+    defer a.free(path);
+    const db = try Database.open(path);
+    defer db.close();
+    try db.exec(@embedFile("migrations/0001_foundation.sql"));
+    try db.exec(@embedFile("migrations/0002_pos.sql"));
+    try db.saveBusiness(.{ .name = "Toko Lama", .mode = "retail", .address = "Alamat" });
+    try db.exec("INSERT INTO product(id,name,sku,barcode,category,unit,price,cost) VALUES(1,'Kopi','SKU1','BC1','Minuman','pcs',5000,3000);");
+    try std.testing.expectEqual(@as(i64, 2), try db.integer("PRAGMA user_version;"));
+
+    try db.migrate(a, path);
+    try std.testing.expectEqual(@as(i64, schema_version), try db.integer("PRAGMA user_version;"));
+    try std.testing.expectEqual(@as(i64, 3), try db.integer("SELECT count(*) FROM schema_migration;"));
+
+    const business = (try db.business(a)).?;
+    defer a.free(business.name);
+    defer a.free(business.mode);
+    defer a.free(business.address);
+    try std.testing.expectEqualStrings("Toko Lama", business.name);
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM product WHERE id=1;"));
+
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='device_config';"));
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='audit_log';"));
+    try db.exec("INSERT INTO device_config(id) VALUES(1);");
+    try std.testing.expectEqual(@as(i64, 80), try db.integer("SELECT paper_width FROM device_config WHERE id=1;"));
+    try std.testing.expectEqual(@as(i64, 9100), try db.integer("SELECT tcp_port FROM device_config WHERE id=1;"));
+    try std.testing.expectError(error.ConstraintViolation, db.exec("INSERT INTO device_config(id) VALUES(2);"));
+    try std.testing.expectError(error.ConstraintViolation, db.exec("UPDATE device_config SET paper_width=70 WHERE id=1;"));
+    try db.exec("INSERT INTO audit_log(kind,entity_type,entity_id,detail) VALUES('drawer_open','sale','INV-1','manual');");
+    try std.testing.expectError(error.ConstraintViolation, db.exec("INSERT INTO audit_log(kind) VALUES('bogus');"));
+
+    var backups: usize = 0;
+    var iterator = temp.dir.iterate();
+    while (try iterator.next()) |entry| {
+        if (!std.mem.startsWith(u8, entry.name, "v2.db.pre-migration-v2.") or !std.mem.endsWith(u8, entry.name, ".bak")) continue;
+        backups += 1;
+        const snapshot_path = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ directory, entry.name }, 0);
+        defer a.free(snapshot_path);
+        const snapshot = try Database.open(snapshot_path);
+        defer snapshot.close();
+        try std.testing.expectEqual(@as(i64, 2), try snapshot.integer("PRAGMA user_version;"));
+        try std.testing.expectEqual(@as(i64, 0), try snapshot.integer("SELECT count(*) FROM sqlite_master WHERE name='device_config';"));
+    }
+    try std.testing.expectEqual(@as(usize, 1), backups);
 }
 
 test "failed v1 upgrades roll back schema and keep distinct recovery copies" {
@@ -401,4 +454,42 @@ test "migration history cannot be missing or inconsistent" {
     try db.migrate(a, ":memory:");
     try db.exec("DELETE FROM schema_migration WHERE version=1;");
     try std.testing.expectError(error.InvalidMigrationHistory, db.migrate(a, ":memory:"));
+}
+
+test "failed v2 migration rolls back new tables and preserves a v2 recovery snapshot" {
+    const a = std.testing.allocator;
+    var temp = std.testing.tmpDir(.{ .iterate = true });
+    defer temp.cleanup();
+    const directory = try temp.dir.realpathAlloc(a, ".");
+    defer a.free(directory);
+    const path = try std.fmt.allocPrintSentinel(a, "{s}/v2-conflict.db", .{directory}, 0);
+    defer a.free(path);
+    const db = try Database.open(path);
+    defer db.close();
+    try db.exec(@embedFile("migrations/0001_foundation.sql"));
+    try db.exec(@embedFile("migrations/0002_pos.sql"));
+    try db.saveBusiness(.{ .name = "Preserved v2", .mode = "retail", .address = "" });
+    try db.exec("CREATE TABLE audit_log(existing TEXT); INSERT INTO audit_log VALUES('original');");
+    try std.testing.expectError(error.DatabaseFailure, db.migrate(a, ":memory:"));
+    try std.testing.expectEqual(@as(i64, 2), try db.integer("PRAGMA user_version;"));
+    try std.testing.expectEqual(@as(i64, 2), try db.integer("SELECT count(*) FROM schema_migration;"));
+    try std.testing.expectEqual(@as(i64, 0), try db.integer("SELECT count(*) FROM sqlite_master WHERE name='device_config';"));
+    var backups: usize = 0;
+    var iterator = temp.dir.iterate();
+    while (try iterator.next()) |entry| {
+        if (!std.mem.startsWith(u8, entry.name, "v2-conflict.db.pre-migration-v2.") or !std.mem.endsWith(u8, entry.name, ".bak")) continue;
+        backups += 1;
+        const snapshot_path = try std.fmt.allocPrintSentinel(a, "{s}/{s}", .{ directory, entry.name }, 0);
+        defer a.free(snapshot_path);
+        const snapshot = try Database.open(snapshot_path);
+        defer snapshot.close();
+        try std.testing.expectEqual(@as(i64, 2), try snapshot.integer("PRAGMA user_version;"));
+        const name = try snapshot.text(a, "SELECT name FROM business;");
+        defer a.free(name);
+        try std.testing.expectEqualStrings("Preserved v2", name);
+        const original = try snapshot.text(a, "SELECT existing FROM audit_log;");
+        defer a.free(original);
+        try std.testing.expectEqualStrings("original", original);
+    }
+    try std.testing.expectEqual(@as(usize, 1), backups);
 }
