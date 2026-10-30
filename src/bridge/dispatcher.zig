@@ -3,6 +3,7 @@ const db_module = @import("../infra/db/sqlite.zig");
 const Database = db_module.Database;
 const pos = @import("../app/pos.zig");
 const device = @import("../app/device.zig");
+const shift = @import("../app/shift.zig");
 const money = @import("../domain/money.zig");
 const Envelope = struct { id: []const u8, command: []const u8, payload: std.json.Value };
 const max_message_bytes = 64 * 1024;
@@ -102,6 +103,32 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
     if (std.mem.eql(u8, request.command, "sale.get")) {
         try fields(p, 1);
         return success(allocator, request.id, .{ .sale = try pos.saleDetail(db, a, try positiveInteger(p, "id")) });
+    }
+    if (std.mem.eql(u8, request.command, "shift.current")) {
+        try fields(p, 0);
+        return success(allocator, request.id, .{ .shift = try shift.current(db, a) });
+    }
+    if (std.mem.eql(u8, request.command, "shift.get")) {
+        try fields(p, 1);
+        return success(allocator, request.id, .{ .shift = try shift.get(db, a, try positiveInteger(p, "id")) });
+    }
+    if (std.mem.eql(u8, request.command, "shift.open")) {
+        try fields(p, 1);
+        return success(allocator, request.id, .{ .shift = try shift.open(db, a, try integer(p, "opening_cash")) });
+    }
+    if (std.mem.eql(u8, request.command, "shift.cash")) {
+        try fields(p, 5);
+        return success(allocator, request.id, .{ .shift = try shift.recordCash(db, a, .{
+            .entry_key = try string(p, "entry_key"),
+            .kind = try string(p, "kind"),
+            .amount = try integer(p, "amount"),
+            .category = try string(p, "category"),
+            .note = try string(p, "note"),
+        }) });
+    }
+    if (std.mem.eql(u8, request.command, "shift.close")) {
+        try fields(p, 3);
+        return success(allocator, request.id, .{ .shift = try shift.close(db, a, try positiveInteger(p, "id"), try integer(p, "counted_cash"), try string(p, "note")) });
     }
     if (std.mem.eql(u8, request.command, "device.get")) {
         try fields(p, 0);
@@ -295,6 +322,14 @@ fn errorCode(err: anyerror) []const u8 {
         error.IdempotencyConflict => "idempotency_conflict",
         error.CheckoutUnknown => "checkout_unknown",
         error.SaleNotFound => "sale_not_found",
+        error.ShiftRequired => "shift_required",
+        error.ShiftOpen => "shift_open",
+        error.ShiftClosed => "shift_closed",
+        error.ShiftNotFound => "shift_not_found",
+        error.InvalidShift => "invalid_shift",
+        error.InvalidCashEntry => "invalid_cash_entry",
+        error.CashEntryLimit => "cash_entry_limit",
+        error.InsufficientCash => "insufficient_cash",
         error.InvalidConfig => "invalid_device_config",
         error.InvalidLogo => "invalid_logo",
         error.InvalidWidth, error.TooWide, error.InvalidBitmap, error.InvalidCode, error.InvalidReceiptText => "invalid_receipt",
@@ -457,6 +492,7 @@ test "checkout allocation failures never duplicate a sale on retry" {
         defer db.close();
         try db.migrate(a, ":memory:");
         try db.saveBusiness(.{ .name = "Allocation Test", .mode = "retail", .address = "" });
+        try db.exec(pos.test_open_shift);
         const product = try pos.saveProduct(db, arena.allocator(), .{ .id = null, .revision = null, .name = "Item", .sku = "", .barcode = "", .category = "", .unit = "pcs", .price = 100, .cost = 50, .stock_milli = 2000 });
         const lines = [_]pos.CartLine{.{ .product_id = product.id, .revision = product.revision, .quantity_milli = 1000, .discount_kind = "none", .discount_value = 0, .note = "" }};
         const payload = pos.CheckoutInput{ .checkout_id = "allocation-retry", .cart = .{ .lines = &lines, .discount_kind = "none", .discount_value = 0, .cash_rounding_increment = 1 }, .tendered = 100, .expected_total = 100 };
@@ -498,6 +534,7 @@ test "separate database connections cannot sell the same last unit twice" {
     defer first.close();
     try first.migrate(a, path);
     try first.saveBusiness(.{ .name = "Last Unit", .mode = "retail", .address = "" });
+    try first.exec(pos.test_open_shift);
     const product = try pos.saveProduct(first, work, .{ .id = null, .revision = null, .name = "Last unit", .sku = "", .barcode = "", .category = "", .unit = "pcs", .price = 100, .cost = 50, .stock_milli = 1000 });
     const second = try Database.open(path);
     defer second.close();
@@ -524,6 +561,7 @@ test "POS bridge accepts a fully discounted cash sale without inventing payment 
     defer db.close();
     try db.migrate(a, ":memory:");
     try db.saveBusiness(.{ .name = "Discount Test", .mode = "service", .address = "" });
+    try db.exec(pos.test_open_shift);
     const product = try pos.saveProduct(db, a, .{ .id = null, .revision = null, .name = "Service", .sku = "", .barcode = "", .category = "", .unit = "service", .price = 12_345, .cost = 0, .stock_milli = null });
     const lines = [_]pos.CartLine{.{ .product_id = product.id, .revision = product.revision, .quantity_milli = 1000, .discount_kind = "percent", .discount_value = 10_000, .note = "" }};
     const input = pos.CheckoutInput{ .checkout_id = "full-discount", .cart = .{ .lines = &lines, .discount_kind = "none", .discount_value = 0, .cash_rounding_increment = 100 }, .expected_total = 0, .tendered = 0 };
@@ -545,6 +583,7 @@ test "POS bridge creates quotes and commits a cash sale only once" {
     const input = pos.ProductInput{ .id = null, .revision = null, .name = "Beras ' Pilihan", .sku = "RICE", .barcode = "012345", .category = "Sembako", .unit = "kg", .price = 15_001, .cost = 10_000, .stock_milli = 2_000 };
     try testFailure(try testCommand(a, db, "product.save", input), "business_required");
     try db.saveBusiness(.{ .name = "Toko Bridge", .mode = "retail", .address = "Jalan Uji" });
+    try db.exec(pos.test_open_shift);
     const created = try testResult(try testCommand(a, db, "product.save", input));
     const product = created.object.get("product").?;
     const id = product.object.get("id").?.integer;
@@ -667,6 +706,7 @@ test "device bridge previews drafts and stores logos without trusting the payloa
 
 fn deviceBridgeSale(db: Database, a: std.mem.Allocator) !i64 {
     try db.saveBusiness(.{ .name = "Toko Perangkat", .mode = "retail", .address = "Jalan Uji" });
+    try db.exec(pos.test_open_shift);
     const product = try pos.saveProduct(db, a, .{ .id = null, .revision = null, .name = "Kopi", .sku = "KOPI", .barcode = "", .category = "", .unit = "pcs", .price = 10_000, .cost = 5_000, .stock_milli = 5_000 });
     const lines = [_]pos.CartLine{.{ .product_id = product.id, .revision = product.revision, .quantity_milli = 1000, .discount_kind = "none", .discount_value = 0, .note = "" }};
     const sale = try pos.checkout(db, a, .{ .checkout_id = "bridge-device-seed", .cart = .{ .lines = &lines, .discount_kind = "none", .discount_value = 0, .cash_rounding_increment = 1 }, .tendered = 10_000, .expected_total = 10_000 });
@@ -777,6 +817,7 @@ test "receipt previews obey the native response cap even for large documents" {
     defer db.close();
     try db.migrate(a, ":memory:");
     try db.saveBusiness(.{ .name = "Large Receipt", .mode = "retail", .address = "" });
+    try db.exec(pos.test_open_shift);
     var lines: [40]pos.CartLine = undefined;
     for (&lines, 0..) |*line, i| {
         const product = try pos.saveProduct(db, a, .{ .id = null, .revision = null, .name = "Long product name repeated to deliberately exercise the receipt payload response size limit without truncating sale data", .sku = try std.fmt.allocPrint(a, "SKU-{d}", .{i}), .barcode = "", .category = "", .unit = "pcs", .price = 100, .cost = 50, .stock_milli = null });
@@ -829,4 +870,46 @@ test "printer acknowledgements allocate before IO and free every allocation on f
         }
     }
     try std.testing.expect(completed);
+}
+
+test "shift bridge opens, records cash, closes and maps shift errors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    const empty = @as(struct {}, .{});
+    try testFailure(try testCommand(a, db, "shift.open", .{ .opening_cash = 0 }), "business_required");
+    try db.saveBusiness(.{ .name = "Toko Shift", .mode = "retail", .address = "" });
+    try std.testing.expect((try testResult(try testCommand(a, db, "shift.current", empty))).object.get("shift").? == .null);
+    const product = try pos.saveProduct(db, a, .{ .id = null, .revision = null, .name = "Kopi", .sku = "", .barcode = "", .category = "", .unit = "pcs", .price = 5_000, .cost = 2_000, .stock_milli = null });
+    const lines = [_]pos.CartLine{.{ .product_id = product.id, .revision = product.revision, .quantity_milli = 1000, .discount_kind = "none", .discount_value = 0, .note = "" }};
+    const checkout = pos.CheckoutInput{ .checkout_id = "shift-sale", .cart = .{ .lines = &lines, .discount_kind = "none", .discount_value = 0, .cash_rounding_increment = 1 }, .tendered = 10_000, .expected_total = 5_000 };
+    try testFailure(try testCommand(a, db, "sale.checkout", checkout), "shift_required");
+    const cash = .{ .entry_key = "ice-1", .kind = "out", .amount = 2_000, .category = "Beli es", .note = "" };
+    try testFailure(try testCommand(a, db, "shift.cash", cash), "shift_required");
+    try testFailure(try testCommand(a, db, "shift.open", .{ .opening_cash = -1 }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "shift.open", .{ .opening_cash = "50000" }), "invalid_payload");
+    const opened = (try testResult(try testCommand(a, db, "shift.open", .{ .opening_cash = 50_000 }))).object.get("shift").?;
+    const id = opened.object.get("id").?.integer;
+    try testFailure(try testCommand(a, db, "shift.open", .{ .opening_cash = 0 }), "shift_open");
+    _ = try testResult(try testCommand(a, db, "sale.checkout", checkout));
+    const after_cash = (try testResult(try testCommand(a, db, "shift.cash", cash))).object.get("shift").?;
+    try std.testing.expectEqual(@as(i64, 53_000), after_cash.object.get("expected_cash").?.integer);
+    try std.testing.expectEqualStrings("Beli es", after_cash.object.get("entries").?.array.items[0].object.get("category").?.string);
+    try testFailure(try testCommand(a, db, "shift.cash", .{ .entry_key = "ice-1", .kind = "out", .amount = 2_001, .category = "Beli es", .note = "" }), "idempotency_conflict");
+    try testFailure(try testCommand(a, db, "shift.cash", .{ .entry_key = "big", .kind = "out", .amount = 53_001, .category = "Setor", .note = "" }), "insufficient_cash");
+    try testFailure(try testCommand(a, db, "shift.cash", .{ .entry_key = "bad", .kind = "refund", .amount = 1, .category = "Setor", .note = "" }), "invalid_cash_entry");
+    try testFailure(try testCommand(a, db, "shift.cash", .{ .entry_key = "bad", .kind = "in", .amount = 1, .category = "Setor" }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "shift.close", .{ .id = id + 1, .counted_cash = 0, .note = "" }), "shift_not_found");
+    const closed = (try testResult(try testCommand(a, db, "shift.close", .{ .id = id, .counted_cash = 52_500, .note = "Kurang" }))).object.get("shift").?;
+    try std.testing.expectEqual(@as(i64, -500), closed.object.get("difference").?.integer);
+    try std.testing.expect(closed.object.get("closed_at").? == .string);
+    _ = try testResult(try testCommand(a, db, "shift.close", .{ .id = id, .counted_cash = 52_500, .note = "Kurang" }));
+    try testFailure(try testCommand(a, db, "shift.close", .{ .id = id, .counted_cash = 53_000, .note = "Kurang" }), "shift_closed");
+    const fetched = (try testResult(try testCommand(a, db, "shift.get", .{ .id = id }))).object.get("shift").?;
+    try std.testing.expectEqual(@as(i64, 1), fetched.object.get("sale_count").?.integer);
+    try testFailure(try testCommand(a, db, "shift.get", .{ .id = 0 }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "shift.current", .{ .extra = true }), "invalid_payload");
 }

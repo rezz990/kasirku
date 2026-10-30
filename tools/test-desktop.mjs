@@ -45,7 +45,7 @@ async function start() {
   await once(reservation, 'listening');
   const port = reservation.address().port;
   await new Promise(resolve => reservation.close(resolve));
-  const process = spawn(path.join(root, 'zig-out/bin/KasirKu.exe'), [], {
+  const process = spawn(globalThis.process.env.KASIRKU_EXE ?? path.join(root, 'zig-out/bin/KasirKu.exe'), [], {
     env: { ...globalThis.process.env, LOCALAPPDATA: data, WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${port}` },
     stdio: 'ignore',
   });
@@ -154,6 +154,8 @@ try {
   const quote = await command(session, 'cart.quote', cart);
   assert.equal(quote.totals.total, 6300);
   const checkout = { checkout_id: 'desktop-retry-1', cart, tendered: 6000, expected_total: 6300 };
+  assert.equal((await rpc(session, 'sale.checkout', { ...checkout, tendered: 10000 })).error.code, 'shift_required');
+  assert.equal((await command(session, 'shift.open', { opening_cash: 50000 })).shift.opening_cash, 50000);
   assert.equal((await rpc(session, 'sale.checkout', checkout)).error.code, 'underpayment');
   assert.equal((await command(session, 'sale.list', { date: '', offset: 0 })).sales.length, 0);
   checkout.tendered = 10000;

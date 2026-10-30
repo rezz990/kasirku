@@ -1,5 +1,5 @@
 const std = @import("std");
-pub const schema_version = 3;
+pub const schema_version = 4;
 pub const c = @cImport({
     @cInclude("sqlite3.h");
 });
@@ -105,6 +105,7 @@ pub const Database = struct {
         }
         if (locked_version < 2) try self.exec(@embedFile("migrations/0002_pos.sql"));
         if (locked_version < 3) try self.exec(@embedFile("migrations/0003_devices.sql"));
+        if (locked_version < 4) try self.exec(@embedFile("migrations/0004_shift.sql"));
         try self.exec("COMMIT;");
     }
 
@@ -345,7 +346,7 @@ test "v1 upgrade backs up the actual file and preserves the business" {
     try db.exec(@embedFile("migrations/0001_foundation.sql"));
     try db.saveBusiness(.{ .name = "Before upgrade", .mode = "retail", .address = "Preserved address" });
     try db.migrate(a, ":memory:");
-    try std.testing.expectEqual(@as(i64, 3), try db.integer("PRAGMA user_version;"));
+    try std.testing.expectEqual(@as(i64, schema_version), try db.integer("PRAGMA user_version;"));
     try db.saveBusiness(.{ .name = "After upgrade", .mode = "food", .address = "New address" });
     try db.migrate(a, path);
     var count: usize = 0;
@@ -386,7 +387,7 @@ test "v2 upgrade preserves data, backs up, and adds device tables" {
 
     try db.migrate(a, path);
     try std.testing.expectEqual(@as(i64, schema_version), try db.integer("PRAGMA user_version;"));
-    try std.testing.expectEqual(@as(i64, 3), try db.integer("SELECT count(*) FROM schema_migration;"));
+    try std.testing.expectEqual(@as(i64, schema_version), try db.integer("SELECT count(*) FROM schema_migration;"));
 
     const business = (try db.business(a)).?;
     defer a.free(business.name);
@@ -504,6 +505,40 @@ test "failed v2 migration rolls back new tables and preserves a v2 recovery snap
         const original = try snapshot.text(a, "SELECT existing FROM audit_log;");
         defer a.free(original);
         try std.testing.expectEqualStrings("original", original);
+    }
+    try std.testing.expectEqual(@as(usize, 1), backups);
+}
+
+test "v3 upgrade keeps sales without a shift and enforces one open shift" {
+    const a = std.testing.allocator;
+    var temp = std.testing.tmpDir(.{ .iterate = true });
+    defer temp.cleanup();
+    const directory = try temp.dir.realpathAlloc(a, ".");
+    defer a.free(directory);
+    const path = try std.fmt.allocPrintSentinel(a, "{s}/v3.db", .{directory}, 0);
+    defer a.free(path);
+    const db = try Database.open(path);
+    defer db.close();
+    try db.exec(@embedFile("migrations/0001_foundation.sql"));
+    try db.exec(@embedFile("migrations/0002_pos.sql"));
+    try db.exec(@embedFile("migrations/0003_devices.sql"));
+    try db.saveBusiness(.{ .name = "Toko v3", .mode = "retail", .address = "" });
+    try db.exec("INSERT INTO sale(checkout_id,input_hash,number,created_at,sale_date,business_name,business_address,discount_kind,discount_value,cash_rounding_increment,gross,line_discount,subtotal,transaction_discount,net_subtotal,service_charge,tax_base,tax,total_before_rounding,rounding_adjustment,total,tendered,change) VALUES('old','" ++ "0" ** 64 ++ "','INV-1','2026-01-01T00:00:00.000Z','2026-01-01','Toko v3','','none',0,1,100,0,100,0,100,0,100,0,100,0,100,100,0);");
+    try db.migrate(a, path);
+    try std.testing.expectEqual(@as(i64, 4), try db.integer("PRAGMA user_version;"));
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM sale WHERE shift_id IS NULL;"));
+    try db.exec("INSERT INTO shift(opened_at,opening_cash) VALUES('2026-01-02T00:00:00.000Z',0);");
+    try std.testing.expectError(error.ConstraintViolation, db.exec("INSERT INTO shift(opened_at,opening_cash) VALUES('2026-01-02T00:00:01.000Z',0);"));
+    try std.testing.expectError(error.ConstraintViolation, db.exec("UPDATE shift SET closed_at='2026-01-03T00:00:00.000Z';"));
+    try std.testing.expectError(error.ConstraintViolation, db.exec("UPDATE shift SET closed_at='2026-01-01T00:00:00.000Z',expected_cash=0,counted_cash=0;"));
+    try db.exec("UPDATE shift SET closed_at='2026-01-03T00:00:00.000Z',expected_cash=0,counted_cash=0;");
+    try db.exec("INSERT INTO shift(opened_at,opening_cash) VALUES('2026-01-04T00:00:00.000Z',0);");
+    try std.testing.expectError(error.ConstraintViolation, db.exec("INSERT INTO cash_entry(entry_key,shift_id,created_at,kind,amount,category,note) VALUES('k',2,'2026-01-04T00:00:00.000Z','out',0,'Es','');"));
+    try std.testing.expectError(error.ConstraintViolation, db.exec("INSERT INTO cash_entry(entry_key,shift_id,created_at,kind,amount,category,note) VALUES('k',99,'2026-01-04T00:00:00.000Z','out',1,'Es','');"));
+    var backups: usize = 0;
+    var iterator = temp.dir.iterate();
+    while (try iterator.next()) |entry| {
+        if (std.mem.startsWith(u8, entry.name, "v3.db.pre-migration-v3.") and std.mem.endsWith(u8, entry.name, ".bak")) backups += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), backups);
 }

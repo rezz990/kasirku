@@ -528,6 +528,12 @@ pub fn checkout(db: Database, a: Allocator, input: CheckoutInput) !Sale {
         }
     }
     const quoted = try quoteInternal(db, work, input.cart);
+    const shift_id = blk: {
+        const s = try db.prepare("SELECT id FROM shift WHERE closed_at IS NULL;");
+        defer s.close();
+        if (!try s.next()) return error.ShiftRequired;
+        break :blk s.columnInt(0);
+    };
     try money.validate(input.expected_total);
     if (quoted.totals.total != input.expected_total) return error.TotalChanged;
     const cash = try cart.payCash(quoted.totals.total, input.tendered);
@@ -550,7 +556,7 @@ pub fn checkout(db: Database, a: Allocator, input: CheckoutInput) !Sale {
     const sequence: u64 = @intCast(sequence_statement.columnInt(0));
     const number = try std.fmt.allocPrint(work, "INV-{s}{s}{s}-{d:0>4}", .{ date[0..4], date[5..7], date[8..10], sequence });
     const sale_id = blk: {
-        const s = try db.prepare("INSERT INTO sale(checkout_id,input_hash,number,created_at,sale_date,business_name,business_address,discount_kind,discount_value,cash_rounding_increment," ++ totals_columns ++ ",tendered,change) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
+        const s = try db.prepare("INSERT INTO sale(checkout_id,input_hash,number,created_at,sale_date,business_name,business_address,discount_kind,discount_value,cash_rounding_increment," ++ totals_columns ++ ",tendered,change,shift_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);");
         defer s.close();
         try s.bindText(1, input.checkout_id);
         try s.bindText(2, &hash);
@@ -565,6 +571,7 @@ pub fn checkout(db: Database, a: Allocator, input: CheckoutInput) !Sale {
         try bindTotals(s, 11, quoted.totals);
         try s.bindInt(22, cash.tendered);
         try s.bindInt(23, cash.change);
+        try s.bindInt(24, shift_id);
         try done(s);
         break :blk sqlite.c.sqlite3_last_insert_rowid(db.handle);
     };
@@ -637,8 +644,10 @@ fn testDb() !Database {
     errdefer db.close();
     try db.migrate(std.testing.allocator, ":memory:");
     try db.saveBusiness(.{ .name = "Toko Snapshot", .mode = "retail", .address = "Jalan Lama" });
+    try db.exec(test_open_shift);
     return db;
 }
+pub const test_open_shift = "INSERT INTO shift(opened_at,opening_cash) VALUES(strftime('%Y-%m-%dT%H:%M:%fZ','now'),0);";
 fn testProduct() ProductInput {
     return .{ .id = null, .revision = null, .name = "Beras", .sku = "RICE", .barcode = "0123", .category = "Sembako", .unit = "kg", .price = 15_001, .cost = 10_000, .stock_milli = 2_000 };
 }

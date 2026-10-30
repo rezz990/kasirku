@@ -376,6 +376,7 @@ fn testSale() TestSale {
 }
 
 fn seedSale(db: Database, a: Allocator) !i64 {
+    try db.exec(pos.test_open_shift);
     const product = try pos.saveProduct(db, a, .{ .id = null, .revision = null, .name = "Kopi", .sku = "", .barcode = "", .category = "", .unit = "pcs", .price = 10_000, .cost = 5_000, .stock_milli = 5_000 });
     const lines = [_]pos.CartLine{.{ .product_id = product.id, .revision = product.revision, .quantity_milli = 1_000, .discount_kind = "none", .discount_value = 0, .note = "" }};
     const sale = try pos.checkout(db, a, .{ .checkout_id = "device-seed", .cart = .{ .lines = &lines, .discount_kind = "none", .discount_value = 0, .cash_rounding_increment = 1 }, .tendered = 10_000, .expected_total = 10_000 });
