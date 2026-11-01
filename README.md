@@ -19,6 +19,23 @@
 
 > **Project status:** Active development. The core cashier workflow is implemented and covered by automated tests. KasirKu is not yet presented as a feature-complete business suite or a turnkey production release; see [Current boundaries](#current-boundaries) and [Engineering roadmap](#engineering-roadmap).
 
+## Application preview
+
+![KasirKu cashier screen with a product catalog, three-item cart, and cash payment action](docs/screenshots/cashier.png)
+
+<p align="center">
+  <sub>The cashier workspace keeps product discovery, cart editing, confirmed totals, and payment in one focused view.</sub>
+</p>
+
+| Local business reports | Cashier shift control | Printer and receipt setup |
+| --- | --- | --- |
+| ![Daily report dashboard](docs/screenshots/dashboard.png) | ![Open cashier shift with cash reconciliation](docs/screenshots/shift.png) | ![Thermal printer settings and receipt preview](docs/screenshots/device.png) |
+| <sub>Daily metrics, hourly sales, and replenishment alerts.</sub> | <sub>Opening cash, cash movements, and the expected drawer balance.</sub> | <sub>58/80 mm receipts, ESC/POS backends, and a live preview.</sub> |
+
+<p align="center">
+  <sub>Screenshots captured from the real KasirKu desktop application using an isolated profile and fictional demo data.</sub>
+</p>
+
 ## Why KasirKu
 
 A point-of-sale system handles money, inventory, and business records. Those responsibilities require more than a polished checkout screen.
@@ -29,6 +46,7 @@ The application is designed for Indonesian MSMEs that need a practical counter t
 
 ## Contents
 
+- [Application preview](#application-preview)
 - [Product capabilities](#product-capabilities)
 - [A typical working day](#a-typical-working-day)
 - [Architecture](#architecture)
@@ -396,6 +414,7 @@ Further release hardening includes continuous integration, broader physical-prin
 kasirku/
 ├── build.zig                 # Native build, test, run, smoke, and golden steps
 ├── build.zig.zon             # Package metadata and Zig version requirement
+├── docs/screenshots/         # Real application images used in the README
 ├── src/
 │   ├── app/                  # POS, shifts, reports, devices, CSV
 │   ├── bridge/               # Strict JSON command boundary

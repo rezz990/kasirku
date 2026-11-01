@@ -19,6 +19,23 @@
 
 > **Status proyek:** Dalam pengembangan aktif. Alur inti kasir telah diimplementasikan dan dilindungi automated tests. KasirKu belum diklaim sebagai paket bisnis yang lengkap atau rilis produksi siap pakai; lihat [Batasan saat ini](#batasan-saat-ini) dan [Roadmap engineering](#roadmap-engineering).
 
+## Pratinjau aplikasi
+
+![Layar kasir KasirKu dengan katalog produk, keranjang berisi tiga item, dan aksi pembayaran tunai](docs/screenshots/cashier.png)
+
+<p align="center">
+  <sub>Area kerja kasir memadukan pencarian produk, pengeditan keranjang, total terkonfirmasi, dan pembayaran dalam satu tampilan yang fokus.</sub>
+</p>
+
+| Laporan usaha lokal | Kontrol shift kasir | Pengaturan printer dan struk |
+| --- | --- | --- |
+| ![Dashboard laporan harian](docs/screenshots/dashboard.png) | ![Shift kasir aktif dengan rekonsiliasi kas](docs/screenshots/shift.png) | ![Pengaturan printer thermal dan pratinjau struk](docs/screenshots/device.png) |
+| <sub>Metrik harian, penjualan per jam, dan peringatan untuk isi ulang stok.</sub> | <sub>Kas awal, pergerakan kas, dan saldo laci yang seharusnya.</sub> | <sub>Struk 58/80 mm, backend ESC/POS, dan pratinjau langsung.</sub> |
+
+<p align="center">
+  <sub>Screenshot diambil dari aplikasi desktop KasirKu yang sebenarnya dengan profil terisolasi dan data demo fiktif.</sub>
+</p>
+
 ## Mengapa KasirKu
 
 Sistem kasir mengelola uang, persediaan, dan catatan usaha. Tanggung jawab tersebut menuntut lebih dari sekadar tampilan checkout yang menarik.
@@ -29,6 +46,7 @@ Aplikasi ini dirancang untuk UMKM Indonesia yang membutuhkan alat kasir praktis 
 
 ## Daftar isi
 
+- [Pratinjau aplikasi](#pratinjau-aplikasi)
 - [Kemampuan produk](#kemampuan-produk)
 - [Alur satu hari kerja](#alur-satu-hari-kerja)
 - [Arsitektur](#arsitektur)
@@ -396,6 +414,7 @@ Penguatan rilis berikutnya mencakup continuous integration, validasi printer fis
 kasirku/
 ├── build.zig                 # Step build, test, run, smoke, dan golden native
 ├── build.zig.zon             # Metadata package dan kebutuhan versi Zig
+├── docs/screenshots/         # Gambar aplikasi nyata yang digunakan di README
 ├── src/
 │   ├── app/                  # POS, shift, laporan, perangkat, CSV
 │   ├── bridge/               # Batas perintah JSON yang ketat
