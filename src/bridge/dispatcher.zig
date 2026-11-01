@@ -2,6 +2,7 @@ const std = @import("std");
 const db_module = @import("../infra/db/sqlite.zig");
 const Database = db_module.Database;
 const pos = @import("../app/pos.zig");
+const report = @import("../app/report.zig");
 const device = @import("../app/device.zig");
 const shift = @import("../app/shift.zig");
 const money = @import("../domain/money.zig");
@@ -63,7 +64,7 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
         return success(allocator, request.id, try pos.listProducts(db, a, try string(p, "query"), try integer(p, "offset")));
     }
     if (std.mem.eql(u8, request.command, "product.save")) {
-        try fields(p, 10);
+        try fields(p, 11);
         const product = try pos.saveProduct(db, a, .{
             .id = try optionalInteger(p, "id"),
             .revision = try optionalInteger(p, "revision"),
@@ -75,6 +76,7 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
             .price = try integer(p, "price"),
             .cost = try integer(p, "cost"),
             .stock_milli = try optionalInteger(p, "stock_milli"),
+            .min_stock_milli = try optionalInteger(p, "min_stock_milli"),
         });
         return success(allocator, request.id, .{ .product = product });
     }
@@ -103,6 +105,22 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
     if (std.mem.eql(u8, request.command, "sale.get")) {
         try fields(p, 1);
         return success(allocator, request.id, .{ .sale = try pos.saleDetail(db, a, try positiveInteger(p, "id")) });
+    }
+    if (std.mem.eql(u8, request.command, "report.dashboard")) {
+        try fields(p, 1);
+        return success(allocator, request.id, try report.dashboard(db, a, try string(p, "date")));
+    }
+    if (std.mem.eql(u8, request.command, "report.sales")) {
+        try fields(p, 4);
+        return success(allocator, request.id, try report.sales(db, a, try string(p, "from"), try string(p, "to"), try string(p, "group_by"), try integer(p, "offset")));
+    }
+    if (std.mem.eql(u8, request.command, "report.profit")) {
+        try fields(p, 3);
+        return success(allocator, request.id, try report.profit(db, a, try string(p, "from"), try string(p, "to"), try integer(p, "offset")));
+    }
+    if (std.mem.eql(u8, request.command, "report.stock")) {
+        try fields(p, 2);
+        return success(allocator, request.id, try report.stock(db, a, try string(p, "filter"), try integer(p, "offset")));
     }
     if (std.mem.eql(u8, request.command, "shift.current")) {
         try fields(p, 0);
@@ -473,6 +491,12 @@ test "POS bridge rejects wrong scalar types, unknown fields and invalid carts" {
     try testFailure(try testCommand(a, db, "sale.get", .{ .id = 9_007_199_254_740_992 }), "invalid_payload");
     try testFailure(try testCommand(a, db, "product.list", .{ .query = "", .offset = -1 }), "invalid_payload");
     try testFailure(try testCommand(a, db, "sale.list", .{ .date = "2026-02-29", .offset = 0 }), "invalid_query");
+    try testFailure(try testCommand(a, db, "report.dashboard", .{ .date = "2026-02-29" }), "invalid_query");
+    try testFailure(try testCommand(a, db, "report.sales", .{ .from = "2026-10-28", .to = "2026-10-27", .group_by = "day", .offset = 0 }), "invalid_query");
+    try testFailure(try testCommand(a, db, "report.sales", .{ .from = "2026-10-27", .to = "2026-10-27", .group_by = "cashier", .offset = 0 }), "invalid_query");
+    try testFailure(try testCommand(a, db, "report.profit", .{ .from = "2026-10-27", .to = "2026-10-27", .offset = -1 }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "report.stock", .{ .filter = "archived", .offset = 0 }), "invalid_query");
+    try testFailure(try testCommand(a, db, "report.stock", .{ .filter = "all", .offset = 0, .extra = true }), "invalid_payload");
     const invalid_lines = [_]pos.CartLine{.{ .product_id = 1, .revision = 1, .quantity_milli = 1000, .discount_kind = "none", .discount_value = 0, .note = "" }} ** 41;
     try testFailure(try testCommand(a, db, "cart.quote", .{ .lines = &invalid_lines, .discount_kind = "none", .discount_value = 0, .cash_rounding_increment = 1 }), "invalid_cart");
     try testFailure(try testCommand(a, db, "sale.checkout", .{ .checkout_id = "x", .cart = null, .tendered = 0, .expected_total = 0 }), "invalid_payload");
@@ -480,7 +504,7 @@ test "POS bridge rejects wrong scalar types, unknown fields and invalid carts" {
     const cases = [_][]const u8{
         "{\"id\":\"x\",\"command\":\"product.archive\",\"payload\":{\"id\":1.0,\"revision\":1}}",
         "{\"id\":\"x\",\"command\":\"product.archive\",\"payload\":{\"id\":1,\"revision\":1,\"revision\":2}}",
-        "{\"id\":\"x\",\"command\":\"product.save\",\"payload\":{\"id\":null,\"revision\":null,\"name\":[65],\"sku\":\"\",\"barcode\":\"\",\"category\":\"\",\"unit\":\"pcs\",\"price\":1,\"cost\":0,\"stock_milli\":null}}",
+        "{\"id\":\"x\",\"command\":\"product.save\",\"payload\":{\"id\":null,\"revision\":null,\"name\":[65],\"sku\":\"\",\"barcode\":\"\",\"category\":\"\",\"unit\":\"pcs\",\"price\":1,\"cost\":0,\"stock_milli\":null,\"min_stock_milli\":null}}",
     };
     for (cases, 0..) |input, i| {
         const response = try dispatch(a, db, input);
@@ -587,7 +611,7 @@ test "POS bridge creates quotes and commits a cash sale only once" {
     const db = try Database.open(":memory:");
     defer db.close();
     try db.migrate(a, ":memory:");
-    const input = pos.ProductInput{ .id = null, .revision = null, .name = "Beras ' Pilihan", .sku = "RICE", .barcode = "012345", .category = "Sembako", .unit = "kg", .price = 15_001, .cost = 10_000, .stock_milli = 2_000 };
+    const input = pos.ProductInput{ .id = null, .revision = null, .name = "Beras ' Pilihan", .sku = "RICE", .barcode = "012345", .category = "Sembako", .unit = "kg", .price = 15_001, .cost = 10_000, .stock_milli = 2_000, .min_stock_milli = 1_000 };
     try testFailure(try testCommand(a, db, "product.save", input), "business_required");
     try db.saveBusiness(.{ .name = "Toko Bridge", .mode = "retail", .address = "Jalan Uji" });
     try db.exec(pos.test_open_shift);
@@ -595,6 +619,7 @@ test "POS bridge creates quotes and commits a cash sale only once" {
     const product = created.object.get("product").?;
     const id = product.object.get("id").?.integer;
     const revision = product.object.get("revision").?.integer;
+    try std.testing.expectEqual(@as(i64, 1_000), product.object.get("min_stock_milli").?.integer);
     const listed = try testResult(try testCommand(a, db, "product.list", .{ .query = "012345", .offset = 0 }));
     try std.testing.expectEqual(@as(usize, 1), listed.object.get("products").?.array.items.len);
     var lines = [_]pos.CartLine{.{ .product_id = id, .revision = revision, .quantity_milli = 500, .discount_kind = "nominal", .discount_value = 501, .note = "Setengah kilo" }};

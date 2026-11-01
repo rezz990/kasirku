@@ -1,5 +1,5 @@
 const std = @import("std");
-pub const schema_version = 4;
+pub const schema_version = 5;
 pub const c = @cImport({
     @cInclude("sqlite3.h");
 });
@@ -106,6 +106,7 @@ pub const Database = struct {
         if (locked_version < 2) try self.exec(@embedFile("migrations/0002_pos.sql"));
         if (locked_version < 3) try self.exec(@embedFile("migrations/0003_devices.sql"));
         if (locked_version < 4) try self.exec(@embedFile("migrations/0004_shift.sql"));
+        if (locked_version < 5) try self.exec(@embedFile("migrations/0005_reports.sql"));
         try self.exec("COMMIT;");
     }
 
@@ -525,7 +526,7 @@ test "v3 upgrade keeps sales without a shift and enforces one open shift" {
     try db.saveBusiness(.{ .name = "Toko v3", .mode = "retail", .address = "" });
     try db.exec("INSERT INTO sale(checkout_id,input_hash,number,created_at,sale_date,business_name,business_address,discount_kind,discount_value,cash_rounding_increment,gross,line_discount,subtotal,transaction_discount,net_subtotal,service_charge,tax_base,tax,total_before_rounding,rounding_adjustment,total,tendered,change) VALUES('old','" ++ "0" ** 64 ++ "','INV-1','2026-01-01T00:00:00.000Z','2026-01-01','Toko v3','','none',0,1,100,0,100,0,100,0,100,0,100,0,100,100,0);");
     try db.migrate(a, path);
-    try std.testing.expectEqual(@as(i64, 4), try db.integer("PRAGMA user_version;"));
+    try std.testing.expectEqual(@as(i64, schema_version), try db.integer("PRAGMA user_version;"));
     try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM sale WHERE shift_id IS NULL;"));
     try db.exec("INSERT INTO shift(opened_at,opening_cash) VALUES('2026-01-02T00:00:00.000Z',0);");
     try std.testing.expectError(error.ConstraintViolation, db.exec("INSERT INTO shift(opened_at,opening_cash) VALUES('2026-01-02T00:00:01.000Z',0);"));

@@ -19,6 +19,7 @@ pub const ProductInput = struct {
     price: i64,
     cost: i64,
     stock_milli: ?i64,
+    min_stock_milli: ?i64 = null,
 };
 pub const Product = struct {
     id: i64,
@@ -31,6 +32,7 @@ pub const Product = struct {
     price: i64,
     cost: i64,
     stock_milli: ?i64,
+    min_stock_milli: ?i64,
 };
 pub const ProductPage = struct { products: []Product, has_more: bool };
 pub const CartLine = struct {
@@ -162,6 +164,7 @@ fn validateProduct(input: ProductInput) !ProductInput {
         !validText(input.sku, 64, false) or !validText(input.barcode, 64, false) or
         !validText(input.category, 64, false) or !nonnegative(input.price) or !nonnegative(input.cost)) return error.InvalidProduct;
     if (input.stock_milli) |stock| if (!nonnegative(stock)) return error.InvalidProduct;
+    if (input.min_stock_milli) |minimum| if (!nonnegative(minimum) or input.stock_milli == null) return error.InvalidProduct;
     var result = input;
     result.name = std.mem.trim(u8, input.name, " ");
     result.unit = std.mem.trim(u8, input.unit, " ");
@@ -188,7 +191,7 @@ fn beginRead(db: Database) !bool {
 fn rollback(db: Database, started: bool) void {
     if (started) db.exec("ROLLBACK;") catch {};
 }
-const product_columns = "id,revision,name,sku,barcode,category,unit,price,cost,stock_milli";
+const product_columns = "id,revision,name,sku,barcode,category,unit,price,cost,stock_milli,min_stock_milli";
 fn readProduct(s: Statement, a: Allocator) !Product {
     return .{
         .id = s.columnInt(0),
@@ -201,6 +204,7 @@ fn readProduct(s: Statement, a: Allocator) !Product {
         .price = s.columnInt(7),
         .cost = s.columnInt(8),
         .stock_milli = optionalInt(s, 9),
+        .min_stock_milli = optionalInt(s, 10),
     };
 }
 fn productInternal(db: Database, a: Allocator, id: i64) !Product {
@@ -237,6 +241,7 @@ fn bindProduct(s: Statement, input: ProductInput) !void {
     try s.bindInt(6, input.price);
     try s.bindInt(7, input.cost);
     try bindOptional(s, 8, input.stock_milli);
+    try bindOptional(s, 9, input.min_stock_milli);
 }
 fn productWrite(db: Database, s: Statement) !void {
     done(s) catch |err| {
@@ -256,17 +261,17 @@ pub fn saveProduct(db: Database, a: Allocator, input: ProductInput) !Product {
     if (normalized.id) |existing_id| {
         const previous = try productInternal(db, work, existing_id);
         if (previous.revision != normalized.revision.? or previous.revision == bound) return error.ProductChanged;
-        const s = try db.prepare("UPDATE product SET name=?,sku=?,barcode=?,category=?,unit=?,price=?,cost=?,stock_milli=?,revision=revision+1 WHERE id=? AND revision=? AND active=1;");
+        const s = try db.prepare("UPDATE product SET name=?,sku=?,barcode=?,category=?,unit=?,price=?,cost=?,stock_milli=?,min_stock_milli=?,revision=revision+1 WHERE id=? AND revision=? AND active=1;");
         defer s.close();
         try bindProduct(s, normalized);
-        try s.bindInt(9, existing_id);
-        try s.bindInt(10, normalized.revision.?);
+        try s.bindInt(10, existing_id);
+        try s.bindInt(11, normalized.revision.?);
         try productWrite(db, s);
         if (sqlite.c.sqlite3_changes(db.handle) != 1) return error.ProductChanged;
         if (previous.stock_milli != normalized.stock_milli) try movement(db, existing_id, null, "adjustment", previous.stock_milli, normalized.stock_milli);
         id = existing_id;
     } else {
-        const s = try db.prepare("INSERT INTO product(name,sku,barcode,category,unit,price,cost,stock_milli) VALUES(?,?,?,?,?,?,?,?);");
+        const s = try db.prepare("INSERT INTO product(name,sku,barcode,category,unit,price,cost,stock_milli,min_stock_milli) VALUES(?,?,?,?,?,?,?,?,?);");
         defer s.close();
         try bindProduct(s, normalized);
         try productWrite(db, s);
@@ -296,7 +301,7 @@ pub fn archiveProduct(db: Database, id: i64, revision: i64) !void {
     if (sqlite.c.sqlite3_changes(db.handle) != 1) return error.ProductChanged;
     try db.exec("COMMIT;");
 }
-fn validateOffset(offset: i64) !void {
+pub fn validateOffset(offset: i64) !void {
     if (offset < 0 or offset > 1_000_000_000) return error.InvalidQuery;
 }
 pub fn listProducts(db: Database, a: Allocator, query: []const u8, offset: i64) !ProductPage {
@@ -595,7 +600,7 @@ pub fn checkout(db: Database, a: Allocator, input: CheckoutInput) !Sale {
     return result;
 }
 
-fn validateDate(date: []const u8) !void {
+pub fn validateDate(date: []const u8) !void {
     if (date.len == 0) return;
     if (date.len != 10 or date[4] != '-' or date[7] != '-') return error.InvalidQuery;
     for (date, 0..) |byte, index| {
@@ -677,7 +682,14 @@ test "POS products CRUD, active uniqueness, tracking transitions and validation"
     try std.testing.expectError(error.ProductConflict, saveProduct(db, a, input));
     input.id = product.id;
     input.revision = product.revision;
+    input.min_stock_milli = 500;
+    const limited = try saveProduct(db, a, input);
+    try std.testing.expectEqual(@as(?i64, 500), limited.min_stock_milli);
+    try std.testing.expectEqual(product.revision + 1, limited.revision);
+    try std.testing.expectEqual(@as(i64, 1), try db.integer("SELECT count(*) FROM stock_movement;"));
+    input.revision = limited.revision;
     input.stock_milli = null;
+    input.min_stock_milli = null;
     const disabled = try saveProduct(db, a, input);
     try std.testing.expect(disabled.stock_milli == null);
     try std.testing.expectError(error.ProductChanged, saveProduct(db, a, input));
@@ -705,6 +717,13 @@ test "POS products CRUD, active uniqueness, tracking transitions and validation"
     try std.testing.expectError(error.InvalidProduct, saveProduct(db, a, invalid));
     invalid = testProduct();
     invalid.stock_milli = -1;
+    try std.testing.expectError(error.InvalidProduct, saveProduct(db, a, invalid));
+    invalid = testProduct();
+    invalid.min_stock_milli = -1;
+    try std.testing.expectError(error.InvalidProduct, saveProduct(db, a, invalid));
+    invalid = testProduct();
+    invalid.stock_milli = null;
+    invalid.min_stock_milli = 0;
     try std.testing.expectError(error.InvalidProduct, saveProduct(db, a, invalid));
     try db.exec("DELETE FROM business;");
     try std.testing.expectError(error.BusinessRequired, saveProduct(db, a, testProduct()));

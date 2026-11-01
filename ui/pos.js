@@ -123,7 +123,7 @@ function renderReceipt(container, sale) {
   container.append(receipt);
 }
 
-export function initPOS({ request, available, device, shift }) {
+export function initPOS({ request, available, device, shift, reports }) {
   let business = null;
   let screen = 'business';
   let products = [];
@@ -189,6 +189,7 @@ export function initPOS({ request, available, device, shift }) {
     $('product-fields').disabled = !available || locked() || editorBusy;
     $('product-close').disabled = locked() || editorBusy;
     $('product-stock').disabled = !available || locked() || editorBusy || !$('product-track-stock').checked;
+    $('product-min-stock').disabled = !available || locked() || editorBusy || !$('product-track-stock').checked;
     $('history-date').disabled = !available || locked();
     $('history-all').disabled = !available || locked();
     $('history-prev').disabled = !available || locked() || historyBusy || historyOffset === 0;
@@ -201,7 +202,7 @@ export function initPOS({ request, available, device, shift }) {
       const input = $(`line-${line.serial}-discount-value`);
       if (input) input.disabled = !editableCart() || line.blocked || line.kind === 'none';
     }
-    for (const id of ['business-screen', 'pos-screen', 'history-screen', 'shift-screen', 'device-screen']) $(id).inert = locked();
+    for (const id of ['business-screen', 'pos-screen', 'history-screen', 'report-screen', 'shift-screen', 'device-screen']) $(id).inert = locked();
     $('receipt-reprint').disabled = !available || locked() || reprintBusy;
     $('print-retry').disabled = printBusy;
     $('print-copy').disabled = printBusy;
@@ -214,7 +215,7 @@ export function initPOS({ request, available, device, shift }) {
   }
 
   function editorValues() {
-    return JSON.stringify(['name', 'sku', 'barcode', 'category', 'unit', 'price', 'cost', 'stock'].map((key) => $(`product-${key}`).value).concat($('product-track-stock').checked));
+    return JSON.stringify(['name', 'sku', 'barcode', 'category', 'unit', 'price', 'cost', 'stock', 'min-stock'].map((key) => $(`product-${key}`).value).concat($('product-track-stock').checked));
   }
 
   function discardEditor() {
@@ -235,6 +236,7 @@ export function initPOS({ request, available, device, shift }) {
     $('business-screen').hidden = next !== 'business';
     $('pos-screen').hidden = next !== 'cashier' && next !== 'products';
     $('history-screen').hidden = next !== 'history';
+    $('report-screen').hidden = next !== 'reports';
     $('shift-screen').hidden = next !== 'shift';
     $('device-screen').hidden = next !== 'device';
     $('cart-panel').hidden = next !== 'cashier';
@@ -251,6 +253,9 @@ export function initPOS({ request, available, device, shift }) {
     } else if (next === 'history') {
       loadHistory();
       $('history-title').focus();
+    } else if (next === 'reports') {
+      reports.show();
+      $('report-title').focus();
     } else if (next === 'shift') {
       shift.show();
       $('shift-title').focus();
@@ -287,7 +292,10 @@ export function initPOS({ request, available, device, shift }) {
       const heading = node('div', 'product-card-heading');
       heading.append(node('h3', '', product.name), node('span', 'product-category', product.category || product.unit));
       const stock = product.stock_milli === null ? text('untracked') : text(product.stock_milli === 0 ? 'soldOut' : 'stockValue', { quantity: decimal(product.stock_milli), unit: product.unit });
-      card.append(heading, node('p', 'product-code', product.sku || product.barcode || text('noCode')), node('strong', 'product-price money', money(product.price)), node('p', product.stock_milli === 0 ? 'stock sold-out' : 'stock', stock));
+      const lowStock = product.stock_milli !== null && product.min_stock_milli !== null && product.stock_milli <= product.min_stock_milli;
+      const stockLine = node('p', product.stock_milli === 0 ? 'stock sold-out' : 'stock', stock);
+      if (lowStock && product.stock_milli !== 0) stockLine.append(node('span', 'stock-badge', text('lowStock')));
+      card.append(heading, node('p', 'product-code', product.sku || product.barcode || text('noCode')), node('strong', 'product-price money', money(product.price)), stockLine);
       const actions = node('div', 'product-actions');
       const edit = button('editProduct', 'plain-button', () => openEditor(product));
       edit.dataset.action = 'edit';
@@ -410,6 +418,7 @@ export function initPOS({ request, available, device, shift }) {
     $('product-cost').value = product?.cost ?? 0;
     $('product-track-stock').checked = product ? product.stock_milli !== null : false;
     $('product-stock').value = product?.stock_milli == null ? '0' : decimal(product.stock_milli);
+    $('product-min-stock').value = product?.min_stock_milli == null ? '' : decimal(product.min_stock_milli);
     $('product-archive').hidden = !product;
     notice('product-notice', null);
     editorBaseline = editorValues();
@@ -438,6 +447,7 @@ export function initPOS({ request, available, device, shift }) {
       payload.price = fixed($('product-price').value, 0);
       payload.cost = fixed($('product-cost').value, 0);
       payload.stock_milli = $('product-track-stock').checked ? fixed($('product-stock').value, 3, limit, 'invalid_product') : null;
+      payload.min_stock_milli = $('product-track-stock').checked && $('product-min-stock').value.trim() ? fixed($('product-min-stock').value, 3, limit, 'invalid_product') : null;
     } catch (error) { notice('product-notice', errorCode(error), true); return; }
     editorBusy = true;
     $('product-save').textContent = text('saving');

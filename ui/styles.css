@@ -369,6 +369,57 @@ dialog h2 { font-size: 23px; margin-bottom: 7px; }
 #shift-gate[hidden] { display: none; }
 #shift-gate p { margin: 0; }
 #shift-gate .secondary-button { flex-shrink: 0; padding: 8px 12px; }
+.stock-badge, .dead-badge { display: inline-flex; align-items: center; width: fit-content; min-height: 24px; padding: 3px 7px; border-radius: 5px; background: #fff0d9; color: #78500d; font-size: 11px; font-weight: 650; line-height: 1.35; }
+.stock .stock-badge { margin-left: 7px; vertical-align: middle; }
+.dead-badge { margin-left: 5px; background: #eee9f5; color: #594273; }
+.report-workspace { min-height: 0; min-width: 0; padding: 16px 20px; }
+.report-shell { height: 100%; min-height: 0; min-width: 0; display: flex; flex-direction: column; background: var(--surface); border: 1px solid #d5e0da; border-radius: 12px; overflow: hidden; box-shadow: 0 3px 12px -9px #214f3e40; }
+.report-tabs { display: flex; gap: 4px; flex-shrink: 0; padding: 0 20px; border-bottom: 1px solid #dce6e0; overflow-x: auto; }
+.report-tabs button { flex: 1; min-width: 120px; padding: 10px 12px; border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: transparent; color: #46675b; font-size: 13px; font-weight: 600; }
+.report-tabs button[aria-pressed="true"] { border-bottom-color: var(--accent); color: var(--accent); background: #f0f7f3; }
+#report-notice { margin: 12px 20px 0; flex-shrink: 0; }
+.report-scroll { flex: 1; min-height: 0; overflow: auto; padding: 18px 20px 22px; overscroll-behavior: contain; }
+.report-section-heading { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 14px 20px; margin-bottom: 16px; }
+.report-section-heading h2 { margin: 0 0 4px; font-size: 20px; }
+.report-section-heading p { margin: 0; font-size: 12px; line-height: 1.5; max-width: 65ch; }
+.report-filter fieldset { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; }
+.report-filter .field { width: 145px; margin: 0; }
+.report-filter .field:has(select) { width: 165px; }
+.report-filter .field label { margin-bottom: 5px; font-size: 11px; }
+.report-filter .secondary-button { min-height: 44px; }
+.metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.metric-card { min-width: 0; padding: 13px 14px; border: 1px solid #d9e4dd; border-radius: 9px; background: #f8fbf9; }
+.metric-card span { display: block; min-height: 32px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.metric-card strong { display: block; margin-top: 5px; font-size: 19px; line-height: 1.3; letter-spacing: -.3px; overflow-wrap: anywhere; }
+.report-columns { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(260px, 1fr); gap: 14px; }
+.report-card { min-width: 0; margin-bottom: 14px; padding: 16px; border: 1px solid #d9e4dd; border-radius: 10px; background: #fff; }
+.report-card h3 { margin: 0 0 12px; font-size: 15px; line-height: 1.4; }
+.report-card .side-heading h3 { margin: 0; }
+.report-hint { margin: 0 0 12px; font-size: 12px; line-height: 1.5; }
+.hours-chart { display: grid; gap: 3px; }
+.hour-row { display: grid; grid-template-columns: 42px minmax(60px, 1fr) 90px; align-items: center; gap: 9px; min-height: 23px; font-size: 11px; }
+.hour-label { color: var(--muted); font-variant-numeric: tabular-nums; }
+.hour-value { text-align: right; font-size: 11px; }
+.hour-row progress { width: 100%; height: 9px; border: 0; border-radius: 5px; overflow: hidden; background: #e7efeb; accent-color: var(--accent); }
+.hour-row progress::-webkit-progress-bar { background: #e7efeb; }
+.hour-row progress::-webkit-progress-value { background: var(--accent); border-radius: 5px; }
+.hour-row progress::-moz-progress-bar { background: var(--accent); border-radius: 5px; }
+.report-alerts { list-style: none; padding: 0; margin: 0; }
+.report-alerts li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 0; border-bottom: 1px solid #e2eae5; }
+.report-alerts li:last-child { border-bottom: 0; }
+.report-alerts strong, .report-alerts span { display: block; overflow-wrap: anywhere; }
+.report-alerts strong { font-size: 13px; }
+.report-alerts div > span { margin-top: 3px; color: var(--muted); font-size: 11px; }
+.report-alerts .stock-badge { flex-shrink: 0; text-align: right; }
+.report-table-wrap { width: 100%; overflow-x: auto; }
+.report-table { width: 100%; border-collapse: collapse; font-size: 12px; line-height: 1.45; }
+.report-table th { padding: 9px 10px; border-bottom: 2px solid #d8e4dc; background: #f6faf7; color: #48675a; text-align: left; font-size: 11px; font-weight: 650; white-space: nowrap; }
+.report-table td { padding: 10px; border-bottom: 1px solid #e2eae5; vertical-align: top; overflow-wrap: anywhere; }
+.report-table tbody tr:last-child td { border-bottom: 0; }
+.report-table .money, .report-table .quantity-cell { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.report-table .report-empty { padding: 28px 12px; color: var(--muted); text-align: center; white-space: normal; }
+.report-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding-top: 10px; border-top: 1px solid #e2eae5; color: var(--muted); font-size: 12px; }
+.report-pagination .plain-button { min-height: 40px; padding: 7px 10px; border: 0; background: transparent; }
 @media (min-width: 1250px) { .pos-workspace { grid-template-columns: minmax(0, 1fr) 410px; padding: 18px 24px; gap: 20px; } .product-list { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; } .product-mode { grid-template-columns: minmax(0, 1fr) 430px; } }
 @media (max-height: 700px) { .workspace { padding-top: 16px; padding-bottom: 16px; gap: 36px; } .setup { padding: 20px; } .benefits { margin: 22px 0; gap: 16px; } .introduction h1 { font-size: 36px; } .intro-copy { font-size: 15px; } .panel-heading { padding-top: 14px; padding-bottom: 12px; } .product-card { padding: 12px; } .cart-bottom { padding-bottom: 12px; } #cart-totals { max-height: 112px; } dialog { padding: 20px; } }
 @media (prefers-reduced-motion: reduce) { button:not(:disabled):active { transform: none; } }

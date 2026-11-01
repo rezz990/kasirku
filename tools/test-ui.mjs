@@ -144,6 +144,23 @@ const mock = `(() => {
       }
       else if (message.command === 'sale.list') result = { sales: sales.map(s=>({id:s.id,number:s.number,created_at:s.created_at,total:s.totals.total,tendered:s.tendered,change:s.change,item_count:s.items.length})), has_more: false };
       else if (message.command === 'sale.get') result={sale:sales.find(s=>s.id===message.payload.id)};
+      else if (message.command === 'report.dashboard') {
+        const total=sales.reduce((n,s)=>n+s.totals.total,0);
+        result={date:message.payload.date,sale_count:sales.length,sales_total:total,average_sale:sales.length?Math.round(total/sales.length):0,revenue:total,cogs:0,gross_profit:total,hours:Array.from({length:24},(_,hour)=>({hour,sale_count:hour===10?sales.length:0,sales_total:hour===10?total:0})),top_products:sales.length?products.filter(p=>!p.archived).map(p=>({product_id:p.id,name:p.name,unit:p.unit,quantity_milli:500,revenue:total,cogs:0,gross_profit:total})):[],low_stock:products.filter(p=>!p.archived&&p.stock_milli!==null&&p.min_stock_milli!==null&&p.stock_milli<=p.min_stock_milli).map(p=>({product_id:p.id,name:p.name,unit:p.unit,stock_milli:p.stock_milli,min_stock_milli:p.min_stock_milli}))};
+      }
+      else if (message.command === 'report.sales') {
+        const total=sales.reduce((n,s)=>n+s.totals.total,0), group=message.payload.group_by;
+        result={from:message.payload.from,to:message.payload.to,group_by:group,sale_count:sales.length,sales_total:total,revenue:total,cogs:0,gross_profit:total,groups:sales.length?[{key:group==='day'?'2026-10-27':group==='product'?products[0].name:'Minuman',product_id:group==='product'?products[0].id:null,unit:group==='product'?products[0].unit:'',sale_count:sales.length,quantity_milli:500,revenue:total,cogs:0,gross_profit:total}]:[],has_more:false};
+      }
+      else if (message.command === 'report.profit') {
+        const total=sales.reduce((n,s)=>n+s.totals.total,0), entries=shifts.flatMap(s=>s.entries).filter(e=>e.kind==='out'), expense=entries.reduce((n,e)=>n+e.amount,0);
+        result={from:message.payload.from,to:message.payload.to,revenue:total,cogs:0,gross_profit:total,expense_total:expense,net_profit:total-expense,expense_categories:entries.map(e=>({category:e.category,amount:e.amount})),has_more:false};
+      }
+      else if (message.command === 'report.stock') {
+        const rows=products.filter(p=>!p.archived).map(p=>({product_id:p.id,name:p.name,category:p.category,unit:p.unit,cost:p.cost,stock_milli:p.stock_milli,min_stock_milli:p.min_stock_milli,stock_value:p.stock_milli===null?0:Math.round(p.cost*p.stock_milli/1000),last_sold_at:sales.length?'2026-10-27T10:00:00Z':null,low_stock:p.stock_milli!==null&&p.min_stock_milli!==null&&p.stock_milli<=p.min_stock_milli,dead_stock:false}));
+        const filtered=message.payload.filter==='low'?rows.filter(p=>p.low_stock):message.payload.filter==='dead'?rows.filter(p=>p.dead_stock):rows;
+        result={filter:message.payload.filter,total_products:rows.length,tracked_products:rows.filter(p=>p.stock_milli!==null).length,low_stock_count:rows.filter(p=>p.low_stock).length,dead_stock_count:0,stock_value:rows.reduce((n,p)=>n+p.stock_value,0),products:filtered,has_more:false};
+      }
       else if (message.command === 'business.save') {
         if (window.__failNext) { window.__failNext = false; error = { code: 'disk_full' }; }
         else { business = message.payload; result = { saved: true }; }
@@ -235,15 +252,17 @@ try {
   await waitFor(`document.querySelector('#saved-view').hidden===false`);
   await evaluate(`document.querySelector('#open-cashier').click(); document.querySelector('#add-product').click();`);
   await waitFor(`document.querySelector('#product-form').hidden===false`);
-  await evaluate(`document.querySelector('#product-name').value='<img src=x onerror=alert(1)>';document.querySelector('#product-sku').value='UI-01';document.querySelector('#product-unit').value='kg';document.querySelector('#product-price').value='-1';document.querySelector('#product-cost').value='5000';document.querySelector('#product-track-stock').click();document.querySelector('#product-stock').value='2,5';document.querySelector('#product-form').requestSubmit();`);
+  await evaluate(`document.querySelector('#product-name').value='<img src=x onerror=alert(1)>';document.querySelector('#product-sku').value='UI-01';document.querySelector('#product-unit').value='kg';document.querySelector('#product-price').value='-1';document.querySelector('#product-cost').value='5000';document.querySelector('#product-track-stock').click();document.querySelector('#product-stock').value='2,5';document.querySelector('#product-min-stock').value='3';document.querySelector('#product-form').requestSubmit();`);
   await waitFor(`document.querySelector('#product-notice').hidden===false`);
   assert.equal(await evaluate(`window.__products.length`), 0);
   await evaluate(`document.querySelector('#product-price').value='9900';document.querySelector('#product-form').requestSubmit();`);
   await waitFor(`window.__products.length===1 && document.querySelector('#product-fields').disabled===false`);
   assert.equal(await evaluate(`window.__products[0].stock_milli`), 2500);
+  assert.equal(await evaluate(`window.__products[0].min_stock_milli`), 3000);
   await evaluate(`document.querySelector('[data-nav="cashier"]').click();`);
   await waitFor(`document.querySelector('#product-list button')!==null`);
   assert.equal(await evaluate(`document.querySelector('#product-list img')!==null`), false);
+  assert.equal(await evaluate(`document.querySelector('#product-list .stock-badge').textContent`), 'Stok menipis');
   await call('Input.dispatchKeyEvent', { type:'keyDown', key:'F2', code:'F2', windowsVirtualKeyCode:113 });
   await call('Input.dispatchKeyEvent', { type:'keyUp', key:'F2', code:'F2', windowsVirtualKeyCode:113 });
   assert.equal(await evaluate(`document.activeElement.id`), 'product-search');
@@ -428,8 +447,40 @@ try {
   await evaluate(`document.querySelector('#shift-opening-cash').value='10000';document.querySelector('#shift-open-form').requestSubmit();`);
   await waitFor(`document.querySelector('#shift-close-card').hidden===false`);
   assert.equal(await evaluate(`window.__shifts.length`), 2);
+  await evaluate(`document.querySelector('[data-nav="reports"]').click();`);
+  await waitFor(`document.querySelector('#report-screen').hidden===false && document.querySelector('#dashboard-metrics').children.length===6 && document.querySelector('#report-notice').hidden===true`);
+  assert.equal(await evaluate(`document.querySelector('#dashboard-hours').children.length`), 24);
+  assert.equal(await evaluate(`document.querySelector('#dashboard-low-stock').children.length`), 1);
+  assert.equal(await evaluate(`document.querySelector('#dashboard-top-products img')!==null`), false);
+  await evaluate(`document.querySelector('[data-report-view="sales"]').click();`);
+  await waitFor(`document.querySelector('#report-sales').hidden===false && document.querySelector('#sales-metrics').children.length===5`);
+  await evaluate(`document.querySelector('#sales-group').value='product';document.querySelector('#sales-from').value='2026-10-28';document.querySelector('#sales-to').value='2026-10-27';document.querySelector('#sales-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#report-notice').textContent.includes('tidak valid')`);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='report.sales').length`), 1);
+  await evaluate(`document.querySelector('#sales-from').value='2026-10-27';document.querySelector('#sales-to').value='2026-10-27';document.querySelector('#sales-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#report-notice').hidden===true && document.querySelector('#sales-groups').children.length===1`);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='report.sales').at(-1).payload.group_by`), 'product');
+  assert.equal(await evaluate(`document.querySelector('#sales-groups img')!==null`), false);
+  await evaluate(`document.querySelector('[data-report-view="profit"]').click();`);
+  await waitFor(`document.querySelector('#report-profit').hidden===false && document.querySelector('#profit-metrics').children.length===5`);
+  assert.equal(await evaluate(`document.querySelector('#profit-categories').textContent.includes('Belanja es')`), true);
+  await evaluate(`document.querySelector('[data-report-view="stock"]').click();`);
+  await waitFor(`document.querySelector('#report-stock').hidden===false && document.querySelector('#stock-products').children.length===1`);
+  assert.equal(await evaluate(`document.querySelector('#stock-products .stock-badge').textContent`), 'Stok menipis');
+  for (const [width, height] of [[1366,768],[1000,640]]) {
+    await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+    assert.equal(await evaluate(`document.querySelector('#report-refresh').getBoundingClientRect().bottom<=innerHeight`), true);
+    const screenshot = await call('Page.captureScreenshot', { format: 'png' });
+    await writeFile(path.join(cache, `report-ui-${width}x${height}.png`), Buffer.from(screenshot.data,'base64'));
+  }
+  await evaluate(`document.querySelector('[data-report-view="dashboard"]').click();`);
+  await waitFor(`document.querySelector('#report-dashboard').hidden===false && document.querySelector('#report-notice').hidden===true`);
+  await evaluate(`document.querySelector('#dashboard-stock-action').click();`);
+  await waitFor(`document.querySelector('#report-stock').hidden===false && document.querySelector('#report-notice').hidden===true`);
+  assert.equal(await evaluate(`document.querySelector('#stock-filter').value`), 'low');
   assert.deepEqual(errors, []);
-  console.log('UI tests passed: setup regression, product entry, decimal quantity/discount parsing, escaped text, checkout_unknown and dropped acknowledgement same-key recovery, history, device settings with live preview/logo/scanner, auto-print outcomes, SALINAN reprint, stale-product blocking, shift gate/open, idempotent cash entries, shift close with difference and shift report print, and desktop layouts. Financial totals are mocked; native tests verify Zig/SQLite.');
+  console.log('UI tests passed: setup regression, product entry with minimum stock and low-stock badges, decimal quantity/discount parsing, escaped text, checkout recovery, history, device settings, auto-print and reprint outcomes, shift workflows, dashboard/sales/profit/stock reports with validation and desktop layouts. Financial totals are mocked; native tests verify Zig/SQLite.');
   const styles = await readFile(path.join(root, 'ui/styles.css'), 'utf8');
   assert.match(styles, /prefers-reduced-motion/);
   const exited = once(browser, 'exit');
