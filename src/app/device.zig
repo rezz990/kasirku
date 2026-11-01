@@ -3,6 +3,7 @@ const sqlite = @import("../infra/db/sqlite.zig");
 const printer = @import("../infra/printer.zig");
 const receipt = @import("../domain/receipt.zig");
 const pos = @import("pos.zig");
+const shift = @import("shift.zig");
 const Database = sqlite.Database;
 const Allocator = std.mem.Allocator;
 
@@ -283,6 +284,86 @@ pub fn testPrint(db: Database, a: Allocator) !void {
     try send(config, bytes);
 }
 
+pub fn printShift(db: Database, a: Allocator, shift_id: i64) !void {
+    const config = try loadConfig(db, a);
+    const summary = try shift.get(db, a, shift_id);
+    const business = try db.business(a);
+    var template = try templateFrom(config, null, if (business) |b| b.name else "KasirKu", if (business) |b| b.address else "");
+    template.cash_drawer = false;
+    template.copies = 1;
+    const report = try shiftReport(db, a, summary, template);
+    try send(config, try receipt.renderEscPos(a, report, template));
+}
+
+fn localTime(db: Database, a: Allocator, iso: []const u8) ![]const u8 {
+    const s = try db.prepare("SELECT strftime('%d/%m/%Y %H:%M',?,'localtime');");
+    defer s.close();
+    try s.bindText(1, iso);
+    if (!try s.next()) return error.NoResult;
+    return a.dupe(u8, s.columnText(0));
+}
+
+fn signedRupiah(a: Allocator, value: i64) ![]const u8 {
+    const magnitude = try receipt.formatRupiah(a, @intCast(@abs(value)));
+    if (value == 0) return magnitude;
+    return std.fmt.allocPrint(a, "{s}{s}", .{ if (value < 0) "-" else "+", magnitude });
+}
+
+fn textLine(a: Allocator, alignment: receipt.Align, value: []const u8, style: receipt.Style) !receipt.Line {
+    const segments = try a.alloc(receipt.Segment, 1);
+    segments[0] = .{ .text = value, .style = style };
+    return .{ .text = .{ .alignment = alignment, .segments = segments } };
+}
+
+fn shiftReport(db: Database, a: Allocator, summary: shift.Summary, template: receipt.Template) !receipt.Receipt {
+    var lines: std.ArrayList(receipt.Line) = .empty;
+    const bold = receipt.Style{ .bold = true };
+    if (template.business_name.len > 0) try lines.append(a, try textLine(a, .center, template.business_name, .{ .bold = true, .double_width = true, .double_height = true }));
+    try lines.append(a, try textLine(a, .center, "LAPORAN SHIFT", bold));
+    try lines.append(a, .{ .rule = .{} });
+    try lines.append(a, .{ .two_column = .{ .label = "Shift", .amount = try std.fmt.allocPrint(a, "#{d}", .{summary.id}) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Buka", .amount = try localTime(db, a, summary.opened_at) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Tutup", .amount = if (summary.closed_at) |closed| try localTime(db, a, closed) else "Belum ditutup" } });
+    try lines.append(a, .{ .rule = .{} });
+    try lines.append(a, .{ .two_column = .{ .label = "Kas awal", .amount = try receipt.formatRupiah(a, summary.opening_cash) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Jumlah transaksi", .amount = try std.fmt.allocPrint(a, "{d}", .{summary.sale_count}) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Total penjualan", .amount = try receipt.formatRupiah(a, summary.sales_total) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Penjualan tunai", .amount = try receipt.formatRupiah(a, summary.cash_sales) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Kas masuk", .amount = try receipt.formatRupiah(a, summary.cash_in) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Kas keluar", .amount = try std.fmt.allocPrint(a, "-{s}", .{try receipt.formatRupiah(a, summary.cash_out)}) } });
+    try lines.append(a, .{ .rule = .{ .bold = true } });
+    try lines.append(a, .{ .two_column = .{ .label = "Kas seharusnya", .amount = try receipt.formatRupiah(a, summary.expected_cash), .label_style = bold, .amount_style = bold } });
+    if (summary.counted_cash) |counted| {
+        try lines.append(a, .{ .two_column = .{ .label = "Kas dihitung", .amount = try receipt.formatRupiah(a, counted) } });
+        try lines.append(a, .{ .two_column = .{ .label = "Selisih", .amount = try signedRupiah(a, summary.difference.?), .label_style = bold, .amount_style = bold } });
+    }
+    if (summary.close_note.len > 0) try lines.append(a, try textLine(a, .left, try std.fmt.allocPrint(a, "Catatan: {s}", .{summary.close_note}), .{}));
+    if (summary.entries.len > 0) {
+        try lines.append(a, .{ .rule = .{} });
+        try lines.append(a, try textLine(a, .left, "Rincian kas masuk/keluar", bold));
+        for (summary.entries) |entry| {
+            const incoming = std.mem.eql(u8, entry.kind, "in");
+            const amount = try receipt.formatRupiah(a, entry.amount);
+            try lines.append(a, .{ .two_column = .{
+                .label = try std.fmt.allocPrint(a, "{s} {s}", .{ if (incoming) "Masuk" else "Keluar", entry.category }),
+                .amount = if (incoming) amount else try std.fmt.allocPrint(a, "-{s}", .{amount}),
+            } });
+            if (entry.note.len > 0) try lines.append(a, try textLine(a, .left, try std.fmt.allocPrint(a, "  {s}", .{entry.note}), .{}));
+        }
+    }
+    if (summary.closed_at != null) {
+        try lines.append(a, .gap);
+        try lines.append(a, .{ .two_column = .{ .label = "Paraf kasir", .amount = "__________" } });
+    }
+    return .{
+        .lines = try lines.toOwnedSlice(a),
+        .cash_drawer = false,
+        .cut_paper = template.cut_paper,
+        .feed_lines = template.feed_lines,
+        .copies = 1,
+    };
+}
+
 pub fn openDrawer(db: Database, a: Allocator) !void {
     const config = try loadConfig(db, a);
     const kick = &[_]u8{ 0x1B, '@', 0x1B, 'p', 0, 25, 250 };
@@ -534,6 +615,41 @@ test "device test print writes a branded diagnostic page" {
     try std.testing.expect(std.mem.indexOf(u8, bytes, "Toko Uji") != null);
     try std.testing.expect(std.mem.indexOf(u8, bytes, "UJI-CETAK") != null);
     try std.testing.expect(std.mem.indexOf(u8, bytes, &.{ 0x1B, 'p', 0, 25, 250 }) == null);
+}
+
+test "shift report prints reconciliation and cash entries without kicking the drawer" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const work = arena.allocator();
+    var temp = std.testing.tmpDir(.{});
+    defer temp.cleanup();
+    const directory = try temp.dir.realpathAlloc(work, ".");
+    const out = try std.fmt.allocPrint(work, "{s}/shift.bin", .{directory});
+
+    const db = try Database.open(":memory:");
+    defer db.close();
+    try db.migrate(a, ":memory:");
+    try db.saveBusiness(.{ .name = "Toko Uji", .mode = "retail", .address = "" });
+    _ = try seedSale(db, work);
+    try saveConfig(db, fileConfig(out));
+    _ = try shift.recordCash(db, work, .{ .entry_key = "out-1", .kind = "out", .amount = 2_000, .category = "Belanja es", .note = "Pasar pagi" });
+
+    try printShift(db, work, 1);
+    const open_bytes = try std.fs.cwd().readFileAlloc(work, out, 1 << 16);
+    try std.testing.expect(std.mem.indexOf(u8, open_bytes, "Belum ditutup") != null);
+    try std.testing.expect(std.mem.indexOf(u8, open_bytes, "Selisih") == null);
+
+    _ = try shift.close(db, work, 1, 7_000, "Kurang seribu");
+    try printShift(db, work, 1);
+    const bytes = try std.fs.cwd().readFileAlloc(work, out, 1 << 16);
+    for ([_][]const u8{ "LAPORAN SHIFT", "Toko Uji", "Rp 10.000", "Rp 8.000", "-Rp 1.000", "Keluar Belanja es", "Pasar pagi", "Kurang seribu", "Paraf kasir" }) |expected| {
+        try std.testing.expect(std.mem.indexOf(u8, bytes, expected) != null);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "Belum ditutup") == null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, &.{ 0x1B, 'p', 0, 25, 250 }) == null);
+    try std.testing.expectError(error.ShiftNotFound, printShift(db, work, 999));
+    try std.testing.expectEqual(@as(i64, 0), try db.integer("SELECT count(*) FROM audit_log;"));
 }
 
 test "audited actions stop before IO if the audit cannot be persisted" {

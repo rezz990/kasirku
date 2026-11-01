@@ -1,6 +1,7 @@
 import { id as strings } from './strings.js';
 import { initPOS } from './pos.js';
 import { initDevice } from './device.js';
+import { initShift } from './shift.js';
 
 const text = (key) => strings[key] ?? strings.unexpected;
 for (const element of document.querySelectorAll('[data-i18n]')) element.textContent = text(element.dataset.i18n);
@@ -54,7 +55,9 @@ bridge?.addEventListener('message', ({ data }) => {
 });
 
 const device = initDevice({ request, available: Boolean(bridge) });
-const pos = initPOS({ request, available: Boolean(bridge), device });
+const shift = initShift({ request, available: Boolean(bridge) });
+const pos = initPOS({ request, available: Boolean(bridge), device, shift });
+shift.setListener(() => pos.syncShift());
 
 function showBusiness(value) {
   document.querySelector('#business-name').value = value.name;

@@ -70,6 +70,17 @@ const mock = `(() => {
   window.__quoteTotal = 9900;
   window.__deviceConfig = {printer_kind:'spooler',printer_name:'',file_path:'',tcp_host:'',tcp_port:9100,paper_width:80,header:'',footer:'',qr_payload:'',copies:1,feed_lines:3,show_sku:false,show_barcode:false,show_qr:false,cash_drawer:true,cut_paper:true};
   window.__logo = null; window.__printError = null;
+  const shifts = window.__shifts = []; let entrySerial = 0;
+  window.__cashErrorOnce = null;
+  const openShift = () => shifts.find(s=>!s.closed_at);
+  const summary = s => {
+    const shiftSales = sales.filter(x=>x.shift_id===s.id);
+    const cashSales = shiftSales.reduce((n,x)=>n+x.totals.total,0);
+    const cashIn = s.entries.filter(e=>e.kind==='in').reduce((n,e)=>n+e.amount,0);
+    const cashOut = s.entries.filter(e=>e.kind==='out').reduce((n,e)=>n+e.amount,0);
+    const expected = s.opening_cash+cashSales+cashIn-cashOut;
+    return {id:s.id,opened_at:s.opened_at,closed_at:s.closed_at,opening_cash:s.opening_cash,sale_count:shiftSales.length,sales_total:cashSales,cash_sales:cashSales,cash_in:cashIn,cash_out:cashOut,expected_cash:expected,counted_cash:s.counted_cash,difference:s.counted_cash===null?null:s.counted_cash-expected,close_note:s.close_note,entries:s.entries};
+  };
   window.chrome = window.chrome || {};
   window.chrome.webview = {
     addEventListener(type, callback) { if (type === 'message') listeners.push(callback); },
@@ -86,6 +97,33 @@ const mock = `(() => {
       }
       else if (message.command === 'product.archive') { products.find(p=>p.id===message.payload.id).archived=true; result={archived:true}; }
       else if (message.command === 'sale.checkout' && window.__checkoutErrorOnce) { error={code:window.__checkoutErrorOnce};window.__checkoutErrorOnce=null; }
+      else if (message.command === 'sale.checkout' && !openShift()) error={code:'shift_required'};
+      else if (message.command === 'shift.current') { const s=openShift(); result={shift:s?summary(s):null}; }
+      else if (message.command === 'shift.open') {
+        if (openShift()) error={code:'shift_open'};
+        else { const s={id:shifts.length+1,opened_at:'2026-10-27T08:00:00Z',closed_at:null,opening_cash:message.payload.opening_cash,counted_cash:null,close_note:'',entries:[]}; shifts.push(s); result={shift:summary(s)}; }
+      }
+      else if (message.command === 'shift.cash') {
+        const s=openShift();
+        if(!s) error={code:'shift_required'};
+        else if(window.__cashErrorOnce){error={code:window.__cashErrorOnce};window.__cashErrorOnce=null;}
+        else {
+          let e=s.entries.find(e=>e.entry_key===message.payload.entry_key);
+          if(!e){e={id:++entrySerial,entry_key:message.payload.entry_key,created_at:'2026-10-27T09:00:00Z',kind:message.payload.kind,amount:message.payload.amount,category:message.payload.category,note:message.payload.note};s.entries.push(e);}
+          result={shift:summary(s)};
+        }
+      }
+      else if (message.command === 'shift.close') {
+        const s=shifts.find(s=>s.id===message.payload.id);
+        if(!s) error={code:'shift_not_found'};
+        else if(s.closed_at) error={code:'shift_closed'};
+        else {s.closed_at='2026-10-27T17:00:00Z';s.counted_cash=message.payload.counted_cash;s.close_note=message.payload.note;result={shift:summary(s)};}
+      }
+      else if (message.command === 'shift.print') {
+        const c=window.__deviceConfig;
+        if(!c.printer_name&&!c.tcp_host&&!c.file_path) error={code:'invalid_device_config'};
+        else result={submitted:true};
+      }
       else if (message.command === 'cart.quote' || message.command === 'sale.checkout') {
         const cart=message.command==='cart.quote'?message.payload:message.payload.cart;
         const items=cart.lines.map(line=>{
@@ -99,7 +137,7 @@ const mock = `(() => {
         }
         else {
           let sale=sales.find(s=>s.checkout_id===message.payload.checkout_id);
-          if(!sale){sale={id:sales.length+1,checkout_id:message.payload.checkout_id,number:'INV-20261027-0001',created_at:'2026-10-27T10:00:00Z',business_name:business.name,business_address:business.address,items,totals,tendered:message.payload.tendered,change:message.payload.tendered-window.__quoteTotal};sales.push(sale);}
+          if(!sale){sale={id:sales.length+1,shift_id:openShift().id,checkout_id:message.payload.checkout_id,number:'INV-20261027-0001',created_at:'2026-10-27T10:00:00Z',business_name:business.name,business_address:business.address,items,totals,tendered:message.payload.tendered,change:message.payload.tendered-window.__quoteTotal};sales.push(sale);}
           result={sale};
           if (window.__unknownCheckoutAck) { window.__unknownCheckoutAck=false; result=undefined; error={code:'checkout_unknown'}; }
         }
@@ -214,6 +252,19 @@ try {
     await waitFor(`document.querySelector('#pay').disabled===false`);
   };
   const quantity = `document.querySelector('#cart-lines input[inputmode="decimal"]')`;
+  await waitFor(`document.querySelector('#shift-gate').hidden===false`);
+  await evaluate(`document.querySelector('#product-list button[data-action="add"]').click();`);
+  await waitFor(`window.__requests.some(r=>r.command==='cart.quote')`);
+  assert.equal(await evaluate(`document.querySelector('#pay').disabled`), true);
+  await evaluate(`document.querySelector('#shift-gate-action').click();`);
+  await waitFor(`document.querySelector('#shift-screen').hidden===false && document.querySelector('#shift-open-form').hidden===false`);
+  await evaluate(`document.querySelector('#shift-opening-cash').value='50000';document.querySelector('#shift-open-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#shift-close-card').hidden===false`);
+  assert.equal(await evaluate(`window.__shifts[0].opening_cash`), 50000);
+  await evaluate(`document.querySelector('[data-nav="cashier"]').click();`);
+  await waitFor(`document.querySelector('#shift-gate').hidden===true && document.querySelector('#product-list button[data-action="add"]')!==null`);
+  await evaluate(`window.confirm=()=>true;document.querySelector('#cart-clear').click();`);
+  await waitFor(`document.querySelector('#cart-lines').children.length===0`);
   await addCart();
   await evaluate(`${quantity}.value='0,0001';${quantity}.dispatchEvent(new Event('input',{bubbles:true}));`);
   await waitFor(`document.querySelector('#pay').disabled===true`);
@@ -346,8 +397,39 @@ try {
   await evaluate(`document.querySelector('#payment-cancel').click();window.__rejectQuote='product_changed';${quantity}.value='1,000';${quantity}.dispatchEvent(new Event('input',{bubbles:true}));`);
   await waitFor(`document.querySelector('#quote-notice').textContent.includes('berubah')`);
   assert.equal(await evaluate(`document.querySelector('#pay').disabled`), true);
+  await evaluate(`document.querySelector('[data-nav="shift"]').click();`);
+  await waitFor(`document.querySelector('#shift-screen').hidden===false && document.querySelector('#shift-cash-card').hidden===false`);
+  await evaluate(`window.__cashErrorOnce='timeout';document.querySelector('input[name="cash_kind"][value="out"]').checked=true;document.querySelector('#shift-cash-amount').value='2000';document.querySelector('#shift-cash-category').value='Belanja es';document.querySelector('#shift-cash-note').value='Pasar pagi';document.querySelector('#shift-cash-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#shift-cash-notice').textContent.includes('merespons') && document.querySelector('#shift-cash-fields').disabled===false`);
+  await evaluate(`document.querySelector('#shift-cash-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#shift-cash-notice').textContent.includes('tercatat')`);
+  assert.equal(await evaluate(`window.__shifts[0].entries.length`), 1);
+  const cashKeys = await evaluate(`window.__requests.filter(r=>r.command==='shift.cash').map(r=>r.payload.entry_key)`);
+  assert.equal(cashKeys.length, 2);
+  assert.equal(cashKeys[0], cashKeys[1]);
+  assert.equal(await evaluate(`document.querySelector('#shift-entries').children.length`), 1);
+  assert.equal(await evaluate(`document.querySelector('#shift-summary').textContent.includes('2.000')`), true);
+  await evaluate(`document.querySelector('#shift-counted').value='47000';document.querySelector('#shift-counted').dispatchEvent(new Event('input',{bubbles:true}));`);
+  assert.match(await evaluate(`document.querySelector('#shift-difference').textContent`), /-/);
+  for (const [width, height] of [[1366,768],[1000,640]]) {
+    await call('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false });
+    assert.equal(await evaluate('document.documentElement.scrollWidth > innerWidth'), false);
+    const screenshot = await call('Page.captureScreenshot', { format: 'png' });
+    await writeFile(path.join(cache, `shift-ui-${width}x${height}.png`), Buffer.from(screenshot.data,'base64'));
+  }
+  await evaluate(`window.confirm=()=>true;document.querySelector('#shift-close-note').value='Kurang seribu';document.querySelector('#shift-close-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#shift-open-form').hidden===false && document.querySelector('#shift-closed-copy').hidden===false`);
+  assert.equal(await evaluate(`window.__shifts[0].closed_at`), '2026-10-27T17:00:00Z');
+  assert.equal(await evaluate(`document.querySelector('#shift-summary').textContent.includes('Kurang seribu')`), true);
+  await evaluate(`document.querySelector('#shift-print').click();`);
+  await waitFor(`document.querySelector('#shift-print-notice').textContent.includes('terkirim')`);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='shift.print').length`), 1);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='shift.print')[0].payload.id`), 1);
+  await evaluate(`document.querySelector('#shift-opening-cash').value='10000';document.querySelector('#shift-open-form').requestSubmit();`);
+  await waitFor(`document.querySelector('#shift-close-card').hidden===false`);
+  assert.equal(await evaluate(`window.__shifts.length`), 2);
   assert.deepEqual(errors, []);
-  console.log('UI tests passed: setup regression, product entry, decimal quantity/discount parsing, escaped text, checkout_unknown and dropped acknowledgement same-key recovery, history, device settings with live preview/logo/scanner, auto-print outcomes, SALINAN reprint, stale-product blocking and desktop layouts. Financial totals are mocked; native tests verify Zig/SQLite.');
+  console.log('UI tests passed: setup regression, product entry, decimal quantity/discount parsing, escaped text, checkout_unknown and dropped acknowledgement same-key recovery, history, device settings with live preview/logo/scanner, auto-print outcomes, SALINAN reprint, stale-product blocking, shift gate/open, idempotent cash entries, shift close with difference and shift report print, and desktop layouts. Financial totals are mocked; native tests verify Zig/SQLite.');
   const styles = await readFile(path.join(root, 'ui/styles.css'), 'utf8');
   assert.match(styles, /prefers-reduced-motion/);
   const exited = once(browser, 'exit');

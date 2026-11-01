@@ -6,7 +6,7 @@ const encoder = new TextEncoder();
 const limit = 9000000000000000n;
 const currency = new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 });
 const totalsKeys = ['gross', 'line_discount', 'subtotal', 'transaction_discount', 'net_subtotal', 'service_charge', 'tax_base', 'tax', 'total_before_rounding', 'rounding_adjustment', 'total'];
-const safeCheckoutErrors = new Set(['invalid_cart', 'invalid_discount', 'product_changed', 'product_not_found', 'insufficient_stock', 'underpayment', 'total_changed', 'disk_full', 'database_busy', 'business_required', 'invalid_payload', 'invalid_request', 'message_too_large']);
+const safeCheckoutErrors = new Set(['invalid_cart', 'invalid_discount', 'product_changed', 'product_not_found', 'insufficient_stock', 'underpayment', 'total_changed', 'disk_full', 'database_busy', 'business_required', 'shift_required', 'invalid_payload', 'invalid_request', 'message_too_large']);
 // These fail before any byte reaches the printer; everything else may have printed.
 const definitePrintErrors = new Set(['printer_failed', 'printer_unreachable', 'printer_not_found', 'invalid_receipt', 'sale_not_found', 'database_busy', 'database_unavailable', 'disk_full', 'invalid_payload', 'message_too_large']);
 
@@ -123,7 +123,7 @@ function renderReceipt(container, sale) {
   container.append(receipt);
 }
 
-export function initPOS({ request, available, device }) {
+export function initPOS({ request, available, device, shift }) {
   let business = null;
   let screen = 'business';
   let products = [];
@@ -182,7 +182,9 @@ export function initPOS({ request, available, device }) {
     $('cart-clear').disabled = !editableCart() || !lines.length;
     $('transaction-fields').disabled = !editableCart();
     $('transaction-discount-value').disabled = !editableCart() || $('transaction-discount-kind').value === 'none';
-    $('pay').disabled = !editableCart() || !lines.length || quoteBusy || !quote || Boolean(quoteError);
+    $('pay').disabled = !editableCart() || !lines.length || quoteBusy || !quote || Boolean(quoteError) || !shift.isOpen();
+    $('shift-gate').hidden = !available || !business || shift.isOpen();
+    $('shift-gate-copy').textContent = text(shift.loaded ? 'shiftGateClosed' : 'shiftGateLoading');
     $('quote-retry').disabled = !editableCart() || quoteBusy;
     $('product-fields').disabled = !available || locked() || editorBusy;
     $('product-close').disabled = locked() || editorBusy;
@@ -199,7 +201,7 @@ export function initPOS({ request, available, device }) {
       const input = $(`line-${line.serial}-discount-value`);
       if (input) input.disabled = !editableCart() || line.blocked || line.kind === 'none';
     }
-    for (const id of ['business-screen', 'pos-screen', 'history-screen', 'device-screen']) $(id).inert = locked();
+    for (const id of ['business-screen', 'pos-screen', 'history-screen', 'shift-screen', 'device-screen']) $(id).inert = locked();
     $('receipt-reprint').disabled = !available || locked() || reprintBusy;
     $('print-retry').disabled = printBusy;
     $('print-copy').disabled = printBusy;
@@ -233,6 +235,7 @@ export function initPOS({ request, available, device }) {
     $('business-screen').hidden = next !== 'business';
     $('pos-screen').hidden = next !== 'cashier' && next !== 'products';
     $('history-screen').hidden = next !== 'history';
+    $('shift-screen').hidden = next !== 'shift';
     $('device-screen').hidden = next !== 'device';
     $('cart-panel').hidden = next !== 'cashier';
     $('product-editor-panel').hidden = next !== 'products';
@@ -243,10 +246,14 @@ export function initPOS({ request, available, device }) {
     if (next === 'cashier' || next === 'products') {
       renderProducts();
       loadProducts();
+      if (next === 'cashier') shift.refresh();
       $('product-search').focus();
     } else if (next === 'history') {
       loadHistory();
       $('history-title').focus();
+    } else if (next === 'shift') {
+      shift.show();
+      $('shift-title').focus();
     } else if (next === 'device') {
       // Reloading while already on the screen would silently drop unsaved settings.
       if (previous !== 'device') device.show();
@@ -256,6 +263,7 @@ export function initPOS({ request, available, device }) {
 
   for (const nav of document.querySelectorAll('[data-nav]')) nav.addEventListener('click', () => navigate(nav.dataset.nav));
   $('open-cashier').addEventListener('click', () => navigate('cashier'));
+  $('shift-gate-action').addEventListener('click', () => navigate('shift'));
   $('device-edit-business').addEventListener('click', () => {
     navigate('business');
     if (screen === 'business') ($('saved-view').hidden ? $('business-name') : $('edit')).focus();
@@ -905,6 +913,7 @@ export function initPOS({ request, available, device }) {
         checkoutUncertain = false;
         attempt = null;
         paymentRepair = true;
+        if (code === 'shift_required') shift.refresh();
         if (code === 'product_changed' || code === 'product_not_found') markChanged();
         else invalidateQuote(code, true);
         notice('payment-notice', 'paymentSafeError', true);
@@ -1078,6 +1087,7 @@ export function initPOS({ request, available, device }) {
   return { setBusiness(value) {
     business = value;
     $('header-business').textContent = value?.name ?? '';
+    if (value && available) shift.refresh();
     synchronize();
-  } };
+  }, syncShift: synchronize };
 }

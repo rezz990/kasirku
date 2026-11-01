@@ -16,6 +16,7 @@
       <button type="button" data-nav="cashier" data-i18n="cashier" disabled></button>
       <button type="button" data-nav="products" data-i18n="products" disabled></button>
       <button type="button" data-nav="history" data-i18n="history" disabled></button>
+      <button type="button" data-nav="shift" data-i18n="shift" disabled></button>
       <button type="button" data-nav="device" data-i18n="device" disabled></button>
       <button type="button" data-nav="business" data-i18n="business" aria-current="page"></button>
     </nav>
@@ -70,7 +71,7 @@
       <div class="cart-scroll"><div id="cart-empty" class="empty-state"><svg aria-hidden="true" viewBox="0 0 48 48"><path d="M12 5h24v38l-6-4-6 4-6-4-6 4V5Zm7 10h10m-10 7h10m-10 7h6"/></svg><h3 data-i18n="cartEmpty"></h3><p data-i18n="cartEmptyCopy"></p></div><div id="cart-lines"></div>
         <details id="transaction-options" class="transaction-options"><summary data-i18n="transactionOptions"></summary><fieldset id="transaction-fields"><div class="discount-fields"><div class="field"><label for="transaction-discount-kind" data-i18n="transactionDiscount"></label><select id="transaction-discount-kind"><option value="none" data-i18n="discountNone"></option><option value="nominal" data-i18n="discountNominal"></option><option value="percent" data-i18n="discountPercent"></option></select></div><div class="field"><label for="transaction-discount-value" data-i18n="discountValue"></label><input id="transaction-discount-value" type="text" inputmode="decimal" value="0" disabled></div></div><div class="field"><label for="cash-rounding" data-i18n="rounding"></label><select id="cash-rounding"><option value="1" data-i18n="rounding1"></option><option value="50" data-i18n="rounding50"></option><option value="100" data-i18n="rounding100"></option></select></div></fieldset></details>
       </div>
-      <div class="cart-bottom"><p id="quote-notice" class="quote-notice" role="status" data-i18n="quoteRequired"></p><button type="button" id="quote-retry" class="text-button" data-i18n="quoteRetry" hidden></button><dl id="cart-totals" class="totals"></dl><button type="button" id="pay" class="primary-button" disabled><span data-i18n="pay"></span><kbd data-i18n="payShortcut"></kbd></button></div>
+      <div class="cart-bottom"><div id="shift-gate" class="notice" hidden><p id="shift-gate-copy"></p><button type="button" id="shift-gate-action" class="secondary-button compact" data-i18n="shiftGateAction"></button></div><p id="quote-notice" class="quote-notice" role="status" data-i18n="quoteRequired"></p><button type="button" id="quote-retry" class="text-button" data-i18n="quoteRetry" hidden></button><dl id="cart-totals" class="totals"></dl><button type="button" id="pay" class="primary-button" disabled><span data-i18n="pay"></span><kbd data-i18n="payShortcut"></kbd></button></div>
     </section>
     <aside id="product-editor-panel" class="product-editor-panel" hidden aria-labelledby="product-editor-title">
       <div id="product-editor-empty" class="empty-state"><h2 data-i18n="productEditorEmpty"></h2><p data-i18n="productEditorCopy"></p></div>
@@ -87,6 +88,56 @@
   <main id="history-screen" class="history-workspace" hidden>
     <section class="history-panel" aria-labelledby="history-title"><div class="panel-heading"><div><h1 id="history-title" data-i18n="historyTitle" tabindex="-1"></h1><p data-i18n="historyCopy"></p></div></div><div class="history-filter"><div class="field"><label for="history-date" data-i18n="historyDate"></label><input id="history-date" type="date"></div><button type="button" id="history-all" class="secondary-button compact" data-i18n="allDates"></button></div><p id="history-notice" class="notice" role="status" hidden></p><div id="history-content" class="history-content"><div id="sale-list"></div><div id="history-empty" class="empty-state" hidden><h2 id="history-empty-title" data-i18n="noSales"></h2><p data-i18n="noSalesCopy"></p></div><button type="button" id="history-retry" class="secondary-button compact" data-i18n="retry" hidden></button></div><div class="pagination"><nav data-i18n-aria="historyPaging"><button type="button" id="history-prev" class="plain-button" data-i18n="previous" disabled></button><span id="history-page"></span><button type="button" id="history-next" class="plain-button" data-i18n="next" disabled></button></nav></div></section>
     <section id="history-detail" class="history-detail" data-i18n-aria="receipt"><div id="receipt-placeholder" class="empty-state"><h2 data-i18n="receiptEmpty"></h2><p data-i18n="receiptEmptyCopy"></p></div><p id="receipt-notice" class="notice" role="status" hidden></p><button type="button" id="receipt-retry" class="secondary-button compact" data-i18n="retry" hidden></button><div id="reprint-bar" class="reprint-bar" hidden><button type="button" id="receipt-reprint" class="secondary-button compact" data-i18n="reprint"></button><p id="reprint-notice" class="notice" role="status" hidden></p></div><div id="history-receipt"></div></section>
+  </main>
+  <main id="shift-screen" class="shift-workspace" hidden>
+    <section class="shift-main" aria-labelledby="shift-title">
+      <div class="panel-heading"><div><h1 id="shift-title" data-i18n="shiftTitle" tabindex="-1"></h1><p data-i18n="shiftCopy"></p></div><button type="button" id="shift-refresh" class="secondary-button compact" data-i18n="shiftRefresh"></button></div>
+      <p id="shift-notice" class="notice" role="status" hidden></p>
+      <div class="shift-scroll">
+        <form id="shift-open-form" hidden><section class="shift-card"><h2 data-i18n="shiftOpenHeading"></h2><p class="muted shift-hint" data-i18n="shiftOpenCopy"></p>
+          <fieldset id="shift-open-fields"><div class="field"><label for="shift-opening-cash" data-i18n="openingCash"></label><input id="shift-opening-cash" type="text" inputmode="numeric" autocomplete="off" required value="0" aria-describedby="shift-money-hint"><span id="shift-money-hint" class="field-hint" data-i18n="moneyHint"></span></div>
+          <button type="submit" id="shift-open-submit" class="primary-button" data-i18n="openShift"></button></fieldset>
+        </section></form>
+        <div id="shift-active" hidden>
+          <div class="shift-status-line"><span id="shift-state" class="shift-badge"></span><span id="shift-opened" class="muted"></span></div>
+          <dl id="shift-summary" class="totals shift-summary"></dl>
+          <p id="shift-closed-copy" class="shift-hint muted" hidden data-i18n="shiftClosedCopy"></p>
+          <div id="shift-entries-block"><h2 data-i18n="entriesHeading"></h2><ul id="shift-entries" class="shift-entries"></ul><p id="shift-entries-empty" class="muted shift-hint" data-i18n="entriesEmpty"></p></div>
+        </div>
+      </div>
+    </section>
+    <aside class="shift-side">
+      <section class="shift-card" id="shift-cash-card" aria-labelledby="shift-cash-heading" hidden>
+        <h2 id="shift-cash-heading" data-i18n="cashHeading"></h2><p class="muted shift-hint" data-i18n="cashCopy"></p>
+        <form id="shift-cash-form"><fieldset id="shift-cash-fields">
+          <fieldset class="segmented"><legend data-i18n="cashKind"></legend><div class="segments">
+            <label><input type="radio" name="cash_kind" value="in" checked><span data-i18n="cashIn"></span></label>
+            <label><input type="radio" name="cash_kind" value="out"><span data-i18n="cashOut"></span></label>
+          </div></fieldset>
+          <div class="field"><label for="shift-cash-amount" data-i18n="cashAmount"></label><input id="shift-cash-amount" type="text" inputmode="numeric" autocomplete="off" required></div>
+          <div class="field"><label for="shift-cash-category" data-i18n="cashCategory"></label><input id="shift-cash-category" maxlength="64" autocomplete="off" required list="shift-cash-categories" data-i18n-placeholder="cashCategoryPlaceholder"><datalist id="shift-cash-categories"></datalist></div>
+          <div class="field"><label for="shift-cash-note" data-i18n="cashNote"></label><input id="shift-cash-note" maxlength="160" autocomplete="off" data-i18n-placeholder="cashNotePlaceholder"></div>
+          <button type="submit" id="shift-cash-submit" class="primary-button" data-i18n="cashSubmit"></button>
+        </fieldset></form>
+        <p id="shift-cash-notice" class="notice" role="status" hidden></p>
+      </section>
+      <section class="shift-card" id="shift-close-card" aria-labelledby="shift-close-heading" hidden>
+        <h2 id="shift-close-heading" data-i18n="closeHeading"></h2><p class="muted shift-hint" data-i18n="closeCopy"></p>
+        <div class="payment-total shift-expected"><span data-i18n="expectedCash"></span><strong id="shift-expected" class="money"></strong></div>
+        <form id="shift-close-form"><fieldset id="shift-close-fields">
+          <div class="field"><label for="shift-counted" data-i18n="countedCash"></label><input id="shift-counted" type="text" inputmode="numeric" autocomplete="off" required></div>
+          <div class="change-row"><span data-i18n="difference"></span><strong id="shift-difference" class="money"></strong></div>
+          <div class="field"><label for="shift-close-note" data-i18n="closeNote"></label><input id="shift-close-note" maxlength="160" autocomplete="off" data-i18n-placeholder="closeNotePlaceholder"></div>
+          <button type="submit" id="shift-close-submit" class="primary-button" data-i18n="closeShift"></button>
+        </fieldset></form>
+        <p id="shift-close-notice" class="notice" role="status" hidden></p>
+      </section>
+      <section class="shift-card" id="shift-print-card" aria-labelledby="shift-print-heading" hidden>
+        <h2 id="shift-print-heading" data-i18n="shiftPrintHeading"></h2><p id="shift-print-hint" class="muted shift-hint"></p>
+        <button type="button" id="shift-print" class="secondary-button" data-i18n="shiftPrint" disabled></button>
+        <p id="shift-print-notice" class="notice" role="status" hidden></p>
+      </section>
+    </aside>
   </main>
   <main id="device-screen" class="device-workspace" hidden>
     <section class="device-settings" aria-labelledby="device-title">

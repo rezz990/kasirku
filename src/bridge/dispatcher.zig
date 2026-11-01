@@ -130,6 +130,13 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
         try fields(p, 3);
         return success(allocator, request.id, .{ .shift = try shift.close(db, a, try positiveInteger(p, "id"), try integer(p, "counted_cash"), try string(p, "note")) });
     }
+    if (std.mem.eql(u8, request.command, "shift.print")) {
+        try fields(p, 1);
+        const response = try success(allocator, request.id, .{ .submitted = true });
+        errdefer allocator.free(response);
+        try device.printShift(db, a, try positiveInteger(p, "id"));
+        return response;
+    }
     if (std.mem.eql(u8, request.command, "device.get")) {
         try fields(p, 0);
         const config = try device.loadConfig(db, a);
@@ -912,4 +919,6 @@ test "shift bridge opens, records cash, closes and maps shift errors" {
     try std.testing.expectEqual(@as(i64, 1), fetched.object.get("sale_count").?.integer);
     try testFailure(try testCommand(a, db, "shift.get", .{ .id = 0 }), "invalid_payload");
     try testFailure(try testCommand(a, db, "shift.current", .{ .extra = true }), "invalid_payload");
+    try testFailure(try testCommand(a, db, "shift.print", .{ .id = id }), "invalid_device_config");
+    try testFailure(try testCommand(a, db, "shift.print", .{ .id = id + 1 }), "shift_not_found");
 }
