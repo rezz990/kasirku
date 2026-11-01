@@ -5,11 +5,21 @@ const pos = @import("../app/pos.zig");
 const report = @import("../app/report.zig");
 const device = @import("../app/device.zig");
 const shift = @import("../app/shift.zig");
+const csv = @import("../app/csv.zig");
 const money = @import("../domain/money.zig");
 const Envelope = struct { id: []const u8, command: []const u8, payload: std.json.Value };
 const max_message_bytes = 64 * 1024;
+var product_import: csv.ImportSession = .{};
 
 pub fn dispatch(allocator: std.mem.Allocator, db: Database, input: []const u8) ![]const u8 {
+    return dispatchInternal(allocator, db, input, null);
+}
+
+pub fn dispatchFile(allocator: std.mem.Allocator, db: Database, input: []const u8, path: []const u8) ![]const u8 {
+    return dispatchInternal(allocator, db, input, path);
+}
+
+fn dispatchInternal(allocator: std.mem.Allocator, db: Database, input: []const u8, path: ?[]const u8) ![]const u8 {
     if (input.len > max_message_bytes) return failure(allocator, null, "message_too_large");
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, input, .{ .max_value_len = max_message_bytes }) catch return failure(allocator, null, "invalid_request");
     defer parsed.deinit();
@@ -51,10 +61,10 @@ pub fn dispatch(allocator: std.mem.Allocator, db: Database, input: []const u8) !
         });
         return success(allocator, request.id, .{ .saved = true });
     }
-    return dispatchPos(allocator, db, request) catch |err| failure(allocator, request.id, errorCode(err));
+    return dispatchPos(allocator, db, request, path) catch |err| failure(allocator, request.id, errorCode(err));
 }
 
-fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![]const u8 {
+fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope, path: ?[]const u8) ![]const u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -85,6 +95,45 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
         try pos.archiveProduct(db, try positiveInteger(p, "id"), try positiveInteger(p, "revision"));
         return success(allocator, request.id, .{ .archived = true });
     }
+    if (std.mem.eql(u8, request.command, "product.import_begin")) {
+        try fields(p, 0);
+        return success(allocator, request.id, .{ .token = try product_import.begin() });
+    }
+    if (std.mem.eql(u8, request.command, "product.import_chunk")) {
+        try fields(p, 2);
+        try product_import.append(std.heap.c_allocator, try string(p, "token"), try string(p, "data_base64"));
+        return success(allocator, request.id, .{ .received = product_import.bytes.items.len });
+    }
+    if (std.mem.eql(u8, request.command, "product.import_preview")) {
+        try fields(p, 1);
+        if (!product_import.matches(try string(p, "token"))) return error.ImportSessionInvalid;
+        return success(allocator, request.id, try csv.previewImport(db, a, product_import.bytes.items));
+    }
+    if (std.mem.eql(u8, request.command, "product.import_apply")) {
+        try fields(p, 1);
+        if (!product_import.matches(try string(p, "token"))) return error.ImportSessionInvalid;
+        const preview = try csv.previewImport(db, a, product_import.bytes.items);
+        if (!preview.valid) return error.InvalidCsv;
+        const response = try success(allocator, request.id, .{ .imported = preview.row_count });
+        errdefer allocator.free(response);
+        _ = try csv.applyImport(db, a, product_import.bytes.items);
+        product_import.clear();
+        return response;
+    }
+    if (std.mem.eql(u8, request.command, "product.import_cancel")) {
+        try fields(p, 1);
+        if (!product_import.matches(try string(p, "token"))) return error.ImportSessionInvalid;
+        product_import.clear();
+        return success(allocator, request.id, .{ .cancelled = true });
+    }
+    if (std.mem.eql(u8, request.command, "csv.export")) {
+        const destination = path orelse return error.FileDialogRequired;
+        const selection = try exportPayload(p);
+        const response = try success(allocator, request.id, .{ .exported = true });
+        errdefer allocator.free(response);
+        try csv.exportFile(db, a, destination, selection);
+        return response;
+    }
     if (std.mem.eql(u8, request.command, "cart.quote")) {
         return success(allocator, request.id, try pos.quote(db, a, try cartPayload(a, p)));
     }
@@ -109,6 +158,13 @@ fn dispatchPos(allocator: std.mem.Allocator, db: Database, request: Envelope) ![
     if (std.mem.eql(u8, request.command, "report.dashboard")) {
         try fields(p, 1);
         return success(allocator, request.id, try report.dashboard(db, a, try string(p, "date")));
+    }
+    if (std.mem.eql(u8, request.command, "report.daily_print")) {
+        try fields(p, 1);
+        const response = try success(allocator, request.id, .{ .submitted = true });
+        errdefer allocator.free(response);
+        try device.printDaily(db, a, try string(p, "date"));
+        return response;
     }
     if (std.mem.eql(u8, request.command, "report.sales")) {
         try fields(p, 4);
@@ -330,6 +386,31 @@ fn cartPayload(a: std.mem.Allocator, value: std.json.Value) !pos.CartInput {
     };
 }
 
+fn exportPayload(p: std.json.Value) !csv.Export {
+    const kind = try string(p, "kind");
+    if (std.mem.eql(u8, kind, "products")) {
+        try fields(p, 1);
+        return .products;
+    }
+    if (std.mem.eql(u8, kind, "dashboard")) {
+        try fields(p, 2);
+        return .{ .dashboard = try string(p, "date") };
+    }
+    if (std.mem.eql(u8, kind, "sales")) {
+        try fields(p, 4);
+        return .{ .sales = .{ .from = try string(p, "from"), .to = try string(p, "to"), .group_by = try string(p, "group_by") } };
+    }
+    if (std.mem.eql(u8, kind, "profit")) {
+        try fields(p, 3);
+        return .{ .profit = .{ .from = try string(p, "from"), .to = try string(p, "to") } };
+    }
+    if (std.mem.eql(u8, kind, "stock")) {
+        try fields(p, 2);
+        return .{ .stock = try string(p, "filter") };
+    }
+    return error.InvalidPayload;
+}
+
 fn errorCode(err: anyerror) []const u8 {
     return switch (err) {
         error.InvalidPayload => "invalid_payload",
@@ -355,6 +436,10 @@ fn errorCode(err: anyerror) []const u8 {
         error.InvalidCashEntry => "invalid_cash_entry",
         error.CashEntryLimit => "cash_entry_limit",
         error.InsufficientCash => "insufficient_cash",
+        error.ImportTooLarge => "import_too_large",
+        error.ImportSessionInvalid => "import_session_invalid",
+        error.InvalidCsv => "invalid_csv",
+        error.ExportFailed, error.FileDialogRequired => "export_failed",
         error.InvalidConfig => "invalid_device_config",
         error.InvalidLogo => "invalid_logo",
         error.InvalidWidth, error.TooWide, error.InvalidBitmap, error.InvalidCode, error.InvalidReceiptText => "invalid_receipt",

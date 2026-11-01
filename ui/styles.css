@@ -140,6 +140,14 @@ input:focus, textarea:focus, select:focus { border-color: var(--accent); }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 18px 20px 14px; flex-shrink: 0; }
 .panel-heading h1, .panel-heading h2 { margin: 0; font-size: 22px; line-height: 1.25; letter-spacing: -.4px; font-weight: 650; }
 .panel-heading p { color: var(--muted); margin: 5px 0 0; line-height: 1.4; font-size: 13px; }
+.product-data-tools { flex-shrink: 0; max-height: 48vh; overflow: auto; margin: 0 20px 14px; padding: 14px; border: 1px solid #d6e2db; border-radius: 9px; background: #f8fbf9; }
+.product-data-tools .report-section-heading { margin-bottom: 12px; }
+.product-data-tools .report-section-heading h2 { font-size: 16px; }
+.product-data-tools .notice { margin: 10px 0; }
+#import-summary { margin: 10px 0; font-weight: 600; line-height: 1.5; }
+.import-rows { display: grid; gap: 5px; font-size: 12px; }
+.import-row { overflow-wrap: anywhere; }
+.import-errors { max-height: 150px; overflow: auto; padding-left: 24px; color: var(--danger); font-size: 12px; line-height: 1.55; }
 .search-form { margin: 0 20px 14px; position: relative; flex-shrink: 0; }
 .search-form svg { position: absolute; top: 13px; left: 13px; width: 20px; height: 20px; stroke: #577368; stroke-width: 1.7; fill: none; stroke-linecap: round; pointer-events: none; }
 .search-form input { padding-left: 42px !important; padding-right: 48px !important; background: #f8fbf9; }

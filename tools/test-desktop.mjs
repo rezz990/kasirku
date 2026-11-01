@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { promisify } from 'node:util';
 import { createServer } from 'node:net';
@@ -241,6 +241,23 @@ try {
   await session.waitFor(`document.querySelector('#report-profit').hidden===false && document.querySelector('#profit-metrics').children.length===5`);
   await session.evaluate(`document.querySelector('[data-report-view="stock"]').click();`);
   await session.waitFor(`document.querySelector('#report-stock').hidden===false && document.querySelector('#stock-products').textContent.includes('Kopi susu')`);
+  const csv = '\uFEFFname,sku,barcode,category,unit,price,cost,stock_milli,min_stock_milli\r\n"Teh, melati",TEH-01,899123,Minuman,gelas,7000,3000,1500,500\r\n';
+  const { token } = await command(session, 'product.import_begin', {});
+  await command(session, 'product.import_chunk', { token, data_base64: Buffer.from(csv).toString('base64') });
+  const importPreview = await command(session, 'product.import_preview', { token });
+  assert.equal(importPreview.valid, true);
+  assert.equal(importPreview.row_count, 1);
+  assert.equal(importPreview.rows[0].product.name, 'Teh, melati');
+  assert.equal((await command(session, 'product.import_apply', { token })).imported, 1);
+  assert.equal((await rpc(session, 'product.import_apply', { token })).error.code, 'import_session_invalid');
+  assert.equal((await command(session, 'product.list', { query: 'TEH-01', offset: 0 })).products[0].stock_milli, 1500);
+  const deviceConfig = (await command(session, 'device.get', {})).config;
+  const dailyPath = path.join(data, 'daily-summary.escpos');
+  await command(session, 'device.save', { ...deviceConfig, printer_kind: 'file', printer_name: '', tcp_host: '', file_path: dailyPath });
+  assert.equal((await command(session, 'report.daily_print', { date: daily.date })).submitted, true);
+  const dailyBytes = await readFile(dailyPath);
+  assert.ok(dailyBytes.includes(Buffer.from('RINGKASAN HARIAN')));
+  assert.ok(dailyBytes.includes(Buffer.from('Laba bersih')));
   await session.evaluate(`document.querySelector('[data-nav="device"]').click();`);
   await session.waitFor(`document.querySelector('#device-fields').disabled===false && document.querySelector('#device-paper pre')!==null`);
   assert.equal(await session.evaluate(`document.querySelector('#device-paper').dataset.width`), '80');
@@ -266,7 +283,8 @@ try {
   assert.equal(detail.items[0].quantity_milli, 500);
   assert.equal(detail.totals.total, 6300);
   assert.equal((await command(session, 'product.list', { query: 'BR-01', offset: 0 })).products.length, 0);
+  assert.equal((await command(session, 'product.list', { query: 'TEH-01', offset: 0 })).products[0].name, 'Teh, melati');
 } finally { await session.close(); }
 assert.deepEqual(runtimeErrors, []);
-console.log('Native desktop tests passed: real WebView2/Zig/SQLite product CRUD with minimum stock, fractional quote, discounts, cash, idempotent retry, immutable history, dashboard/sales/profit/stock reports, blocked navigation, clean shutdown and restart persistence.');
+console.log('Native desktop tests passed: real WebView2/Zig/SQLite product CRUD with minimum stock, fractional quote, discounts, cash, idempotent retry, immutable history, dashboard/sales/profit/stock reports, chunked CSV import, daily thermal output, blocked navigation, clean shutdown and restart persistence.');
 console.log(`Isolated test data: ${data}`);

@@ -11,8 +11,8 @@ pub fn build(b: *std.Build) void {
     const app_module = b.createModule(.{ .root_source_file = b.path("src/main.zig"), .target = target, .optimize = optimize, .link_libc = true, .link_libcpp = true });
     addSqlite(b, app_module);
     app_module.addIncludePath(b.path("vendor/webview2/build/native/include"));
-    app_module.addCSourceFile(.{ .file = b.path("src/infra/webview/host.cpp"), .flags = &.{ "-std=c++17", "-fms-extensions", "-fno-exceptions", "-fno-rtti", "-DUNICODE", "-D_UNICODE", "-D_WIN32_WINNT=0x0A00" } });
-    for ([_][]const u8{ "user32", "ole32", "shell32", "shlwapi", "gdi32", "advapi32", "uuid", "winspool", "ws2_32" }) |library| app_module.linkSystemLibrary(library, .{});
+    app_module.addCSourceFile(.{ .file = b.path("src/infra/webview/host.cpp"), .flags = &.{ "-std=c++17", "-fms-extensions", "-fno-exceptions", "-fno-rtti", "-DUNICODE", "-D_UNICODE" } });
+    for ([_][]const u8{ "user32", "ole32", "shell32", "shlwapi", "gdi32", "advapi32", "uuid", "winspool", "ws2_32", "comdlg32" }) |library| app_module.linkSystemLibrary(library, .{});
     const exe = b.addExecutable(.{ .name = "KasirKu", .root_module = app_module });
     exe.subsystem = .Windows;
     b.installArtifact(exe);

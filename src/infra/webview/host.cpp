@@ -14,6 +14,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <commdlg.h>
 #include <objbase.h>
 #if defined(__MINGW32__) && defined(__clang__)
 // Preserve UUID attributes that MinGW otherwise erases from WebView2 interfaces.
@@ -36,6 +37,7 @@ typedef struct EventRegistrationToken { INT64 value; } EventRegistrationToken;
 #include <new>
 
 extern "C" char* kasirku_dispatch(const char* request);
+extern "C" char* kasirku_dispatch_file(const char* request, const wchar_t* path);
 extern "C" void kasirku_free(char* response);
 
 namespace {
@@ -156,6 +158,7 @@ struct Envelope {
     bool pong = false;
     bool ping = false;
     bool smokeAck = false;
+    bool csvExport = false;
     unsigned seen = 0;
 };
 class Json {
@@ -240,6 +243,7 @@ class Json {
                 if (field == 8) {
                     envelope->ping = StringEquals(content, "system.ping");
                     envelope->smokeAck = StringEquals(content, "native.smoke.ack");
+                    envelope->csvExport = StringEquals(content, "csv.export");
                 }
                 if (field == 16) envelope->pong = Equals(content, "true");
             } while (take(','));
@@ -328,6 +332,7 @@ void Unsubscribe(Source* source, HRESULT (STDMETHODCALLTYPE Source::*remove)(Eve
 
 struct Work : HeapObject {
     char* response = nullptr; // Zig-owned, freed exactly once after posting or discarding.
+    wchar_t* path = nullptr;
     size_t length = 0;
     UINT64 generation = 0;
     bool smoke = false;
@@ -337,7 +342,10 @@ struct Work : HeapObject {
         void* memory = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(Work) + bytes + 1);
         return memory ? ::new (memory) Work : nullptr;
     }
-    ~Work() { if (response) kasirku_free(response); }
+    ~Work() {
+        if (response) kasirku_free(response);
+        if (path) HeapFree(GetProcessHeap(), 0, path);
+    }
 };
 
 #define RETURN_IF_FAILED(expression) do { HRESULT result_ = (expression); if (FAILED(result_)) return result_; } while (0)
@@ -752,6 +760,29 @@ HRESULT Host::messageReceived(ICoreWebView2*, ICoreWebView2WebMessageReceivedEve
         }
         return S_OK;
     }
+    if (envelope.csvExport) {
+        item->path = static_cast<wchar_t*>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, kPathLimit * sizeof(wchar_t)));
+        if (!item->path) {
+            delete item;
+            fail(L"Memori tidak cukup untuk memilih lokasi CSV.", E_OUTOFMEMORY);
+            return S_OK;
+        }
+        wcscpy_s(item->path, kPathLimit, L"kasirku.csv");
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = window_;
+        dialog.lpstrFilter = L"CSV (*.csv)\0*.csv\0Semua file (*.*)\0*.*\0\0";
+        dialog.lpstrFile = item->path;
+        dialog.nMaxFile = kPathLimit;
+        dialog.lpstrDefExt = L"csv";
+        dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (!GetSaveFileNameW(&dialog)) {
+            DWORD error = CommDlgExtendedError();
+            reject(error == 0 ? "export_cancelled" : "file_dialog_failed", item->request(), item->length);
+            delete item;
+            return S_OK;
+        }
+    }
     item->smoke = smoke_ && smokeSent_ && !smokeQueued_ && envelope.ping && StringEquals(envelope.id, "native-smoke");
     EnterCriticalSection(&lock_);
     bool accepted = !workerStopping_ && outstanding_ < kQueueLimit;
@@ -796,7 +827,7 @@ DWORD Host::work() {
             LeaveCriticalSection(&lock_);
 
             // The only call site, on the only worker. No COM, HWND manipulation, or DB calls on the UI thread.
-            item->response = kasirku_dispatch(item->request());
+            item->response = item->path ? kasirku_dispatch_file(item->request(), item->path) : kasirku_dispatch(item->request());
 
             EnterCriticalSection(&lock_);
             bool notify = finishedCount_ == 0;

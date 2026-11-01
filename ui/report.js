@@ -86,6 +86,8 @@ export function initReports({ request, available }) {
     for (const name of ['dashboard', 'sales', 'profit', 'stock']) $(`report-${name}`).hidden = name !== view;
     for (const fieldset of document.querySelectorAll('#report-screen fieldset')) fieldset.disabled = !available || busy;
     $('report-refresh').disabled = !available || busy;
+    $('report-export').disabled = !available || busy;
+    $('daily-print').disabled = !available || busy || view !== 'dashboard';
     for (const name of ['sales', 'profit', 'stock']) {
       const page = pages[name];
       $(`${name}-prev`).disabled = !available || busy || !page.previous.length;
@@ -249,11 +251,66 @@ export function initReports({ request, available }) {
     }
   }
 
+  function exportPayload() {
+    if (view === 'dashboard') return { kind: 'dashboard', date: $('dashboard-date').value };
+    if (view === 'sales') {
+      const from = $('sales-from').value;
+      const to = $('sales-to').value;
+      if (!validRange(from, to)) throw new Error('invalid_query');
+      return { kind: 'sales', from, to, group_by: $('sales-group').value };
+    }
+    if (view === 'profit') {
+      const from = $('profit-from').value;
+      const to = $('profit-to').value;
+      if (!validRange(from, to)) throw new Error('invalid_query');
+      return { kind: 'profit', from, to };
+    }
+    return { kind: 'stock', filter: $('stock-filter').value };
+  }
+
+  async function exportCsv() {
+    if (busy || !available) return;
+    busy = true;
+    ++sequence;
+    notice('exportBusy');
+    synchronize();
+    try {
+      const result = await request('csv.export', exportPayload());
+      if (result?.exported !== true) throw new Error('unexpected');
+      notice('exportSuccess');
+    } catch (error) {
+      notice(error?.message ?? 'unexpected', error?.message !== 'export_cancelled');
+    } finally {
+      busy = false;
+      synchronize();
+    }
+  }
+
+  async function printDaily() {
+    if (busy || !available || view !== 'dashboard') return;
+    busy = true;
+    ++sequence;
+    notice('dailyPrinting');
+    synchronize();
+    try {
+      const result = await request('report.daily_print', { date: $('dashboard-date').value });
+      if (result?.submitted !== true) throw new Error('unexpected');
+      notice('dailyPrintSent');
+    } catch (error) {
+      notice(error?.message ?? 'unexpected', true);
+    } finally {
+      busy = false;
+      synchronize();
+    }
+  }
+
   function select(next) {
     view = next;
     synchronize();
     load();
   }
+  $('report-export').addEventListener('click', exportCsv);
+  $('daily-print').addEventListener('click', printDaily);
   for (const tab of document.querySelectorAll('[data-report-view]')) tab.addEventListener('click', () => select(tab.dataset.reportView));
   $('report-refresh').addEventListener('click', load);
   $('dashboard-form').addEventListener('submit', (event) => { event.preventDefault(); load(); });

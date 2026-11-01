@@ -72,6 +72,8 @@ const mock = `(() => {
   window.__logo = null; window.__printError = null;
   const shifts = window.__shifts = []; let entrySerial = 0;
   window.__cashErrorOnce = null;
+  window.__importData = ''; window.__importToken = null; window.__importInvalid = false;
+  window.__exportError = null;
   const openShift = () => shifts.find(s=>!s.closed_at);
   const summary = s => {
     const shiftSales = sales.filter(x=>x.shift_id===s.id);
@@ -96,6 +98,19 @@ const mock = `(() => {
         result = { product };
       }
       else if (message.command === 'product.archive') { products.find(p=>p.id===message.payload.id).archived=true; result={archived:true}; }
+      else if (message.command === 'product.import_begin') { window.__importData='';window.__importToken='0123456789abcdef0123456789abcdef';result={token:window.__importToken}; }
+      else if (message.command === 'product.import_chunk') { window.__importData+=message.payload.data_base64;result={received:window.__importData.length}; }
+      else if (message.command === 'product.import_preview') {
+        if(window.__importInvalid) result={valid:false,row_count:1,error_count:1,rows:[],errors:[{line:3,code:'invalid_product'}]};
+        else result={valid:true,row_count:2,error_count:0,rows:[{line:2,product:{name:'Produk impor A',price:12000}},{line:3,product:{name:'Produk impor B',price:8000}}],errors:[]};
+      }
+      else if (message.command === 'product.import_apply') {
+        for(const [name,price] of [['Produk impor A',12000],['Produk impor B',8000]]) products.push({id:products.length+1,revision:1,name,sku:'',barcode:'',category:'Impor',unit:'pcs',price,cost:0,stock_milli:null,min_stock_milli:null});
+        result={imported:2};window.__importToken=null;
+      }
+      else if (message.command === 'product.import_cancel') { window.__importToken=null;result={cancelled:true}; }
+      else if (message.command === 'csv.export') { if(window.__exportError) error={code:window.__exportError}; else result={exported:true}; }
+      else if (message.command === 'report.daily_print') result={submitted:true};
       else if (message.command === 'sale.checkout' && window.__checkoutErrorOnce) { error={code:window.__checkoutErrorOnce};window.__checkoutErrorOnce=null; }
       else if (message.command === 'sale.checkout' && !openShift()) error={code:'shift_required'};
       else if (message.command === 'shift.current') { const s=openShift(); result={shift:s?summary(s):null}; }
@@ -479,8 +494,41 @@ try {
   await evaluate(`document.querySelector('#dashboard-stock-action').click();`);
   await waitFor(`document.querySelector('#report-stock').hidden===false && document.querySelector('#report-notice').hidden===true`);
   assert.equal(await evaluate(`document.querySelector('#stock-filter').value`), 'low');
+  await evaluate(`document.querySelector('#report-export').click();`);
+  await waitFor(`document.querySelector('#report-notice').textContent.includes('berhasil')`);
+  assert.deepEqual(await evaluate(`window.__requests.filter(r=>r.command==='csv.export').at(-1).payload`), {kind:'stock',filter:'low'});
+  await evaluate(`document.querySelector('[data-report-view="dashboard"]').click();`);
+  await waitFor(`document.querySelector('#report-dashboard').hidden===false && document.querySelector('#report-notice').hidden===true`);
+  await evaluate(`document.querySelector('#daily-print').click();`);
+  await waitFor(`document.querySelector('#report-notice').textContent.includes('terkirim')`);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='report.daily_print').length`), 1);
+  await evaluate(`document.querySelector('#report-export').click();`);
+  await waitFor(`document.querySelector('#report-notice').textContent.includes('berhasil')`);
+  assert.deepEqual(await evaluate(`window.__requests.filter(r=>r.command==='csv.export').at(-1).payload`), {kind:'dashboard',date:await evaluate(`document.querySelector('#dashboard-date').value`)});
+  await evaluate(`document.querySelector('[data-nav="products"]').click();`);
+  await waitFor(`document.querySelector('#product-data-tools').hidden===false`);
+  const chooseCsv = `(()=>{const input=document.querySelector('#product-import-file');const transfer=new DataTransfer();transfer.items.add(new File(['name,sku,barcode,category,unit,price,cost,stock_milli,min_stock_milli\\n'],'produk.csv',{type:'text/csv'}));input.files=transfer.files;input.dispatchEvent(new Event('change',{bubbles:true}));})()`;
+  await evaluate(`window.__importInvalid=true;${chooseCsv}`);
+  await waitFor(`document.querySelector('#import-preview').hidden===false && document.querySelector('#import-apply').disabled===true`);
+  assert.match(await evaluate(`document.querySelector('#import-errors').textContent`), /Baris 3/);
+  await evaluate(`window.__importInvalid=false;${chooseCsv}`);
+  await waitFor(`document.querySelector('#import-preview').hidden===false && document.querySelector('#import-apply').disabled===false`);
+  assert.equal(await evaluate(`document.querySelector('#import-rows').children.length`), 2);
+  assert.equal(await evaluate(`window.__requests.filter(r=>r.command==='product.import_chunk').length>=2`), true);
+  await evaluate(`document.querySelector('#import-apply').click();`);
+  await waitFor(`document.querySelector('#import-notice').textContent.includes('2 produk berhasil')`);
+  assert.equal(await evaluate(`window.__products.filter(p=>p.category==='Impor').length`), 2);
+  await waitFor(`document.querySelector('#product-export').disabled===false`);
+  await evaluate(`window.__exportError='export_cancelled';document.querySelector('#product-export').click();`);
+  await waitFor(`window.__requests.filter(r=>r.command==='csv.export').length===3`);
+  await waitFor(`document.querySelector('#import-notice').textContent.includes('dibatalkan')`);
+  assert.equal(await evaluate(`document.querySelector('#import-notice').classList.contains('error')`), false);
+  await waitFor(`document.querySelector('#product-export').disabled===false`);
+  await evaluate(`window.__exportError=null;document.querySelector('#product-export').click();`);
+  await waitFor(`document.querySelector('#import-notice').textContent.includes('berhasil')`);
+  assert.deepEqual(await evaluate(`window.__requests.filter(r=>r.command==='csv.export').at(-1).payload`), {kind:'products'});
   assert.deepEqual(errors, []);
-  console.log('UI tests passed: setup regression, product entry with minimum stock and low-stock badges, decimal quantity/discount parsing, escaped text, checkout recovery, history, device settings, auto-print and reprint outcomes, shift workflows, dashboard/sales/profit/stock reports with validation and desktop layouts. Financial totals are mocked; native tests verify Zig/SQLite.');
+  console.log('UI tests passed: setup regression, product entry with minimum stock and low-stock badges, decimal quantity/discount parsing, escaped text, checkout recovery, history, device settings, auto-print and reprint outcomes, shift workflows, dashboard/sales/profit/stock reports with validation, CSV import preview/apply/export, daily thermal action, and desktop layouts. Financial totals are mocked; native tests verify Zig/SQLite.');
   const styles = await readFile(path.join(root, 'ui/styles.css'), 'utf8');
   assert.match(styles, /prefers-reduced-motion/);
   const exited = once(browser, 'exit');

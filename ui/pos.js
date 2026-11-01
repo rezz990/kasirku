@@ -138,6 +138,9 @@ export function initPOS({ request, available, device, shift, reports }) {
   let editing = null;
   let editorBaseline = '';
   let editorBusy = false;
+  let importBusy = false;
+  let importToken = null;
+  let importReady = false;
   let lines = [];
   let lineSerial = 0;
   let quote = null;
@@ -174,8 +177,12 @@ export function initPOS({ request, available, device, shift, reports }) {
       else nav.removeAttribute('aria-current');
     }
     $('open-cashier').disabled = !available || !business || locked();
-    $('add-product').disabled = !available || !business || locked() || editorBusy;
-    $('product-search').disabled = !available || locked();
+    $('add-product').disabled = !available || !business || locked() || editorBusy || importBusy;
+    $('product-export').disabled = !available || !business || locked() || importBusy;
+    $('product-import-file').disabled = !available || !business || locked() || importBusy;
+    $('import-apply').disabled = !available || !business || locked() || importBusy || !importReady;
+    $('import-cancel').disabled = importBusy || !importToken;
+    $('product-search').disabled = !available || locked() || importBusy;
     $('catalog-prev').disabled = !available || locked() || catalogBusy || !catalogPrevious.length;
     $('catalog-next').disabled = !available || locked() || catalogBusy || !catalogHasMore;
     $('catalog-empty-action').disabled = !available || locked();
@@ -244,6 +251,7 @@ export function initPOS({ request, available, device, shift, reports }) {
     $('pos-screen').classList.toggle('product-mode', next === 'products');
     $('catalog-title').textContent = text(next === 'products' ? 'productsTitle' : 'catalogTitle');
     $('catalog-copy').textContent = text(next === 'products' ? 'productsCopy' : 'catalogCopy');
+    $('product-data-tools').hidden = next !== 'products';
     synchronize();
     if (next === 'cashier' || next === 'products') {
       renderProducts();
@@ -375,6 +383,117 @@ export function initPOS({ request, available, device, shift, reports }) {
     catalogPrevious = [];
     loadProducts();
   }
+
+  function clearImport() {
+    importToken = null;
+    importReady = false;
+    $('product-import-file').value = '';
+    $('import-preview').hidden = true;
+    $('import-rows').replaceChildren();
+    $('import-errors').replaceChildren();
+    synchronize();
+  }
+
+  function renderImportPreview(result) {
+    if (!result || typeof result.valid !== 'boolean' || !Number.isSafeInteger(result.row_count) || !Number.isSafeInteger(result.error_count) || !Array.isArray(result.rows) || !Array.isArray(result.errors)) throw new Error('unexpected');
+    importReady = result.valid && result.row_count > 0;
+    $('import-summary').textContent = text(result.valid ? 'importPreviewValid' : 'importPreviewInvalid', { count: result.valid ? result.row_count : result.error_count });
+    const rows = $('import-rows');
+    rows.replaceChildren();
+    for (const row of result.rows) {
+      if (!Number.isSafeInteger(row.line) || !row.product || !Number.isSafeInteger(row.product.price)) throw new Error('unexpected');
+      rows.append(node('div', 'import-row', text('importLine', { line: row.line, name: row.product.name, price: money(row.product.price) })));
+    }
+    const errors = $('import-errors');
+    errors.replaceChildren();
+    for (const error of result.errors) {
+      if (!Number.isSafeInteger(error.line) || typeof error.code !== 'string') throw new Error('unexpected');
+      errors.append(node('li', '', text('importErrorLine', { line: error.line, code: text(error.code) })));
+    }
+    $('import-preview').hidden = false;
+  }
+
+  $('product-import-file').addEventListener('change', async () => {
+    const file = $('product-import-file').files[0];
+    if (!file || importBusy) return;
+    clearImport();
+    importBusy = true;
+    notice('import-notice', 'importReading');
+    synchronize();
+    try {
+      if (!file.size || file.size > 8 * 1024 * 1024) throw new Error('import_too_large');
+      const started = await request('product.import_begin');
+      if (typeof started?.token !== 'string' || !/^[0-9a-f]{32}$/.test(started.token)) throw new Error('unexpected');
+      importToken = started.token;
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const chunkSize = 24 * 1024;
+      for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+        const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+        const data = btoa(String.fromCharCode(...chunk));
+        await request('product.import_chunk', { token: importToken, data_base64: data });
+      }
+      renderImportPreview(await request('product.import_preview', { token: importToken }));
+      notice('import-notice', null);
+    } catch (error) {
+      importReady = false;
+      notice('import-notice', errorCode(error), true);
+    } finally {
+      importBusy = false;
+      synchronize();
+    }
+  });
+
+  $('import-cancel').addEventListener('click', async () => {
+    if (importBusy || !importToken) return;
+    importBusy = true;
+    synchronize();
+    try {
+      await request('product.import_cancel', { token: importToken });
+      notice('import-notice', 'importCancelled');
+    } catch (error) {
+      notice('import-notice', errorCode(error), true);
+    } finally {
+      importBusy = false;
+      clearImport();
+    }
+  });
+
+  $('import-apply').addEventListener('click', async () => {
+    if (importBusy || !importReady || !importToken) return;
+    importBusy = true;
+    notice('import-notice', 'importApplying');
+    synchronize();
+    try {
+      const result = await request('product.import_apply', { token: importToken });
+      if (!Number.isSafeInteger(result?.imported)) throw new Error('unexpected');
+      clearImport();
+      resetSearch();
+      notice('import-notice', 'productImported', false, { count: result.imported });
+    } catch (error) {
+      notice('import-notice', errorCode(error), true);
+    } finally {
+      importBusy = false;
+      synchronize();
+    }
+  });
+
+  $('product-export').addEventListener('click', async () => {
+    if (importBusy || !available || !business) return;
+    importBusy = true;
+    notice('import-notice', 'exportBusy');
+    synchronize();
+    try {
+      const result = await request('csv.export', { kind: 'products' });
+      if (result?.exported !== true) throw new Error('unexpected');
+      notice('import-notice', 'exportSuccess');
+    } catch (error) {
+      notice('import-notice', errorCode(error), errorCode(error) !== 'export_cancelled');
+    } finally {
+      importBusy = false;
+      synchronize();
+    }
+  });
+
   $('search-form').addEventListener('submit', (event) => { event.preventDefault(); resetSearch(); });
   $('product-search').addEventListener('input', () => {
     if (locked()) return;

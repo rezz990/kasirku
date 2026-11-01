@@ -61,6 +61,16 @@ export fn kasirku_dispatch(request: [*:0]const u8) ?[*:0]u8 {
     return terminated.ptr;
 }
 
+export fn kasirku_dispatch_file(request: [*:0]const u8, path: [*:0]const u16) ?[*:0]u8 {
+    const allocator = std.heap.c_allocator;
+    const utf8_path = std.unicode.utf16LeToUtf8Alloc(allocator, std.mem.span(path)) catch return null;
+    defer allocator.free(utf8_path);
+    const response = bridge.dispatchFile(allocator, database.?, std.mem.span(request), utf8_path) catch return null;
+    defer allocator.free(response);
+    const terminated = allocator.dupeZ(u8, response) catch return null;
+    return terminated.ptr;
+}
+
 export fn kasirku_free(response: [*:0]u8) void {
     std.heap.c_allocator.free(std.mem.span(response));
 }

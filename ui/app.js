@@ -33,7 +33,8 @@ function request(command, payload = {}) {
   if (!bridge) return Promise.reject(new Error('desktopRequired'));
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error('timeout')); }, 10000);
+    const timeout = command === 'csv.export' ? 300000 : 10000;
+    const timer = setTimeout(() => { pending.delete(id); reject(new Error('timeout')); }, timeout);
     pending.set(id, { resolve, reject, timer });
     try {
       bridge.postMessage({ id, command, payload });

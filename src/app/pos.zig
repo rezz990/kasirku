@@ -157,7 +157,7 @@ fn validText(value: []const u8, max: usize, note: bool) bool {
     }
     return true;
 }
-fn validateProduct(input: ProductInput) !ProductInput {
+pub fn validateProduct(input: ProductInput) !ProductInput {
     if ((input.id == null) != (input.revision == null)) return error.InvalidProduct;
     if (input.id) |id| if (!positive(id) or !positive(input.revision.?)) return error.InvalidProduct;
     if (!validText(input.name, 120, false) or !validText(input.unit, 16, false) or
@@ -249,6 +249,23 @@ fn productWrite(db: Database, s: Statement) !void {
         return err;
     };
 }
+fn insertProduct(db: Database, input: ProductInput) !i64 {
+    const s = try db.prepare("INSERT INTO product(name,sku,barcode,category,unit,price,cost,stock_milli,min_stock_milli) VALUES(?,?,?,?,?,?,?,?,?);");
+    defer s.close();
+    try bindProduct(s, input);
+    try productWrite(db, s);
+    const id = sqlite.c.sqlite3_last_insert_rowid(db.handle);
+    if (input.stock_milli != null) try movement(db, id, null, "initial", null, input.stock_milli);
+    return id;
+}
+pub fn importProducts(db: Database, inputs: []const ProductInput) !void {
+    if (inputs.len == 0) return error.InvalidProduct;
+    try db.exec("BEGIN IMMEDIATE;");
+    errdefer rollback(db, true);
+    try requireBusiness(db);
+    for (inputs) |input| _ = try insertProduct(db, try validateProduct(input));
+    try db.exec("COMMIT;");
+}
 pub fn saveProduct(db: Database, a: Allocator, input: ProductInput) !Product {
     const normalized = try validateProduct(input);
     var arena = std.heap.ArenaAllocator.init(a);
@@ -271,12 +288,7 @@ pub fn saveProduct(db: Database, a: Allocator, input: ProductInput) !Product {
         if (previous.stock_milli != normalized.stock_milli) try movement(db, existing_id, null, "adjustment", previous.stock_milli, normalized.stock_milli);
         id = existing_id;
     } else {
-        const s = try db.prepare("INSERT INTO product(name,sku,barcode,category,unit,price,cost,stock_milli,min_stock_milli) VALUES(?,?,?,?,?,?,?,?,?);");
-        defer s.close();
-        try bindProduct(s, normalized);
-        try productWrite(db, s);
-        id = sqlite.c.sqlite3_last_insert_rowid(db.handle);
-        if (normalized.stock_milli != null) try movement(db, id, null, "initial", null, normalized.stock_milli);
+        id = try insertProduct(db, normalized);
     }
     const result = try copyOwned(Product, a, try productInternal(db, work, id));
     errdefer freeOwned(Product, a, result);

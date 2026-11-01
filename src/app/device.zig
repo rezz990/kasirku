@@ -4,6 +4,7 @@ const printer = @import("../infra/printer.zig");
 const receipt = @import("../domain/receipt.zig");
 const pos = @import("pos.zig");
 const shift = @import("shift.zig");
+const report = @import("report.zig");
 const Database = sqlite.Database;
 const Allocator = std.mem.Allocator;
 
@@ -291,8 +292,30 @@ pub fn printShift(db: Database, a: Allocator, shift_id: i64) !void {
     var template = try templateFrom(config, null, if (business) |b| b.name else "KasirKu", if (business) |b| b.address else "");
     template.cash_drawer = false;
     template.copies = 1;
-    const report = try shiftReport(db, a, summary, template);
-    try send(config, try receipt.renderEscPos(a, report, template));
+    const document = try shiftReport(db, a, summary, template);
+    try send(config, try receipt.renderEscPos(a, document, template));
+}
+
+pub fn previewDaily(db: Database, a: Allocator, date: []const u8) !Preview {
+    const config = try loadConfig(db, a);
+    const business = try db.business(a);
+    const template = try templateFrom(config, null, if (business) |b| b.name else "KasirKu", if (business) |b| b.address else "");
+    const document = try dailyReport(db, a, date, template);
+    return .{
+        .text = try receipt.renderText(a, document, template),
+        .bytes = try receipt.renderEscPos(a, document, template),
+        .width = config.paper_width,
+    };
+}
+
+pub fn printDaily(db: Database, a: Allocator, date: []const u8) !void {
+    const config = try loadConfig(db, a);
+    const business = try db.business(a);
+    var template = try templateFrom(config, null, if (business) |b| b.name else "KasirKu", if (business) |b| b.address else "");
+    template.cash_drawer = false;
+    template.copies = 1;
+    const document = try dailyReport(db, a, date, template);
+    try send(config, try receipt.renderEscPos(a, document, template));
 }
 
 fn localTime(db: Database, a: Allocator, iso: []const u8) ![]const u8 {
@@ -354,6 +377,50 @@ fn shiftReport(db: Database, a: Allocator, summary: shift.Summary, template: rec
     if (summary.closed_at != null) {
         try lines.append(a, .gap);
         try lines.append(a, .{ .two_column = .{ .label = "Paraf kasir", .amount = "__________" } });
+    }
+    return .{
+        .lines = try lines.toOwnedSlice(a),
+        .cash_drawer = false,
+        .cut_paper = template.cut_paper,
+        .feed_lines = template.feed_lines,
+        .copies = 1,
+    };
+}
+
+fn dailyReport(db: Database, a: Allocator, date: []const u8, template: receipt.Template) !receipt.Receipt {
+    const summary = try report.dashboard(db, a, date);
+    const profit = try report.profit(db, a, summary.date, summary.date, 0);
+    var lines: std.ArrayList(receipt.Line) = .empty;
+    const bold = receipt.Style{ .bold = true };
+    if (template.business_name.len > 0) try lines.append(a, try textLine(a, .center, template.business_name, .{ .bold = true, .double_width = true, .double_height = true }));
+    try lines.append(a, try textLine(a, .center, "RINGKASAN HARIAN", bold));
+    try lines.append(a, try textLine(a, .center, summary.date, .{}));
+    try lines.append(a, .{ .rule = .{} });
+    try lines.append(a, .{ .two_column = .{ .label = "Jumlah transaksi", .amount = try std.fmt.allocPrint(a, "{d}", .{summary.sale_count}) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Total penjualan", .amount = try receipt.formatRupiah(a, summary.sales_total) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Rata-rata transaksi", .amount = try receipt.formatRupiah(a, summary.average_sale) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Pendapatan bersih", .amount = try receipt.formatRupiah(a, summary.revenue) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Harga pokok", .amount = try receipt.formatRupiah(a, summary.cogs) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Laba kotor", .amount = try receipt.formatRupiah(a, summary.gross_profit) } });
+    try lines.append(a, .{ .two_column = .{ .label = "Biaya operasional", .amount = try receipt.formatRupiah(a, profit.expense_total) } });
+    try lines.append(a, .{ .rule = .{ .bold = true } });
+    try lines.append(a, .{ .two_column = .{ .label = "Laba bersih", .amount = try receipt.formatRupiah(a, profit.net_profit), .label_style = bold, .amount_style = bold } });
+    if (summary.top_products.len > 0) {
+        try lines.append(a, .{ .rule = .{} });
+        try lines.append(a, try textLine(a, .left, "Produk terlaris", bold));
+        for (summary.top_products) |product| {
+            const quantity = try receipt.formatQuantity(a, product.quantity_milli);
+            try lines.append(a, .{ .two_column = .{ .label = product.name, .amount = try std.fmt.allocPrint(a, "{s} {s}", .{ quantity, product.unit }) } });
+            try lines.append(a, .{ .two_column = .{ .label = "  Pendapatan", .amount = try receipt.formatRupiah(a, product.revenue) } });
+        }
+    }
+    if (summary.low_stock.len > 0) {
+        try lines.append(a, .{ .rule = .{} });
+        try lines.append(a, try textLine(a, .left, "Perlu isi ulang", bold));
+        for (summary.low_stock) |product| {
+            const quantity = try receipt.formatQuantity(a, product.stock_milli);
+            try lines.append(a, .{ .two_column = .{ .label = product.name, .amount = try std.fmt.allocPrint(a, "{s} {s}", .{ quantity, product.unit }) } });
+        }
     }
     return .{
         .lines = try lines.toOwnedSlice(a),
